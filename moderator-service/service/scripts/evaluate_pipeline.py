@@ -79,15 +79,8 @@ async def run_evaluation():
                 y_pred.append(response.decision)
                 
                 # respect Groq free tier 30 RPM limit
+                # respect Groq free tier 30 RPM limit
                 await asyncio.sleep(1.0)
-                
-                # Check for False Positives
-                if response.decision != true_label and true_label == "ALLOW":
-                    print(f"\nFALSE POSITIVE [{idx}]")
-                    print(f"  Stage triggered : {response.stage_triggered}")
-                    print(f"  Violated rule   : {response.violated_rule}")
-                    print(f"  Confidence      : {response.confidence}")
-                    print(f"  Message         : {message[:120]}")
                 
                 # Optional: print mismatches
                 if response.decision != true_label:

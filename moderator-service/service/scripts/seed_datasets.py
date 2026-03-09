@@ -134,6 +134,13 @@ async def seed_smart_keywords(redis: Redis):
     # clf.coef_[0] is the weight per word — positive = toxic signal
     coef = clf.coef_[0]
 
+    from collections import Counter
+    toxic_doc_freq = Counter()
+    for row in [r for r in all_rows if r["toxic"] == 1]:
+        unique_words = set(row["text"].lower().split())
+        for word in unique_words:
+            toxic_doc_freq[word] += 1
+
     # Separate into hard (high signal) and soft (moderate signal)
     hard_keywords = []
     soft_keywords = []
@@ -142,9 +149,9 @@ async def seed_smart_keywords(redis: Redis):
         # The user specifically requested unigrams. 'word' will be strings
         if len(word) < 3:
             continue
-        if weight >= 2.5:        # strongly toxic — hard block
+        if weight >= 2.8 and toxic_doc_freq.get(word, 0) >= 20:  # previously 3.5, now 2.8 with robust frequency check
             hard_keywords.append(word)
-        elif weight >= 1.0:      # moderately toxic — soft, send to LLM
+        elif weight >= 1.5:      # moderately toxic — soft, send to LLM
             soft_keywords.append(word)
 
     logger.info(f"Hard keywords: {len(hard_keywords)}, Soft keywords: {len(soft_keywords)}")
@@ -187,6 +194,13 @@ async def seed_smart_keywords_hindi(redis: Redis):
     clf.fit(X, labels)
     coef = clf.coef_[0]
 
+    from collections import Counter
+    toxic_doc_freq = Counter()
+    for row in [r for r in all_rows if r["toxic"] == 1]:
+        unique_words = set(row["text"].lower().split())
+        for word in unique_words:
+            toxic_doc_freq[word] += 1
+
     hard_hi = []
     soft_hi = []
     hard_hien = []
@@ -200,10 +214,10 @@ async def seed_smart_keywords_hindi(redis: Redis):
             
         # Split into Devanagari (hi) and Roman (hi-en) based on characters
         is_roman = bool(re.search(r'[a-zA-Z]', word))
-        if weight >= 2.5:
+        if weight >= 2.8 and toxic_doc_freq.get(word, 0) >= 20:
             if is_roman: hard_hien.append(word)
             else: hard_hi.append(word)
-        elif weight >= 1.0:
+        elif weight >= 1.5:
             if is_roman: soft_hien.append(word)
             else: soft_hi.append(word)
 
@@ -327,6 +341,8 @@ async def seed_profile(db: AsyncSession):
         keywords_by_language={},
         spam_limit=5,
         spam_window_s=10,
+        llm_confidence_threshold_en=0.85,
+        llm_confidence_threshold_indic=0.85,
     )
     db.add(profile)
     await db.flush()
@@ -342,6 +358,15 @@ GROUP CONTEXT: {{ group_topic }}
 
 GLOBAL RULES (apply to all communities, all languages):
 {{ global_rules_formatted }}
+
+CRITICAL DISTINCTIONS — read carefully before making any decision:
+- Mentioning a race, religion, gender identity, or nationality is NOT hate speech.
+- Expressing love, support, or neutral facts about a group is NOT hate speech.
+- Hate speech requires ATTACK, DEHUMANIZATION, or SLURS directed AT a group.
+- A message saying "trans women are beautiful" is SUPPORTIVE, not hateful — ALLOW it.
+- A message saying "God bless you" or "Allah is great" is religious expression — ALLOW it.
+- A message mentioning someone's ethnicity neutrally is NOT racist — ALLOW it.
+- Only BLOCK if the message contains explicit slurs, calls for violence, or direct dehumanization of a group.
 
 GROUP-SPECIFIC RULES:
 {{ group_rules_formatted }}

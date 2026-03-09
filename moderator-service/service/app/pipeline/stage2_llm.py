@@ -53,6 +53,15 @@ class Stage2LLM:
                 # If unsure, we ALLOW by default to avoid false positives
                 response.decision = "ALLOW"
                 
+            # 4. Rule Validation — prevents hallucinated rules from blocking
+            if response.decision == "BLOCK" and response.violated_rule:
+                all_rules_text = " ".join(profile.global_rules + profile.group_rules).lower()
+                # Check if the violated_rule is a reasonably close match (substring)
+                if response.violated_rule.lower() not in all_rules_text:
+                    logger.warning(f"LLM hallucinated rule '{response.violated_rule}'. Overriding to ALLOW.")
+                    response.decision = "ALLOW"
+                    response.violated_rule = None
+
             return response
             
         except asyncio.TimeoutError:

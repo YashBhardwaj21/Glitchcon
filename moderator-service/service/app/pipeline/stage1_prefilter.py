@@ -228,7 +228,14 @@ class Stage1Prefilter:
         # 3. Profanity Check (Multilingual)
         has_profanity, p_type = ProfanityChecker.check(lang_ctx.normalised_text, lang_ctx)
         if has_profanity:
-            return PreFilterResult(blocked=True, stage="stage1", matched=p_type, template_key="profanity", detected_language=lang_ctx.code)
+            return PreFilterResult(
+                blocked=False, 
+                stage="stage1", 
+                matched=p_type, 
+                template_key="profanity", 
+                detected_language=lang_ctx.code,
+                keyword_hint=f"Message may contain sensitive terms (profanity check: {p_type})"
+            )
             
         # 4. Keyword Check (Per-language TF-IDF Redis SETs)
         keyword_result = await KeywordChecker.check(lang_ctx.normalised_text, profile, lang_ctx, redis)
