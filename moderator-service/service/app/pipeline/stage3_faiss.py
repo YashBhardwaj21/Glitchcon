@@ -25,11 +25,61 @@ class FAISSResult(NamedTuple):
         "HINT"  — score in [SOFT, HARD).   Pass to LLM with a semantic hint.
         "ALLOW" — score < SOFT threshold.  LLM runs without any hint.
     topic:  matched banned topic label (or None when decision is ALLOW)
+    category: violation category (e.g. SCAM, HATE_SPEECH)
     score:  cosine similarity (0.0–1.0)
     """
     decision: Literal["BLOCK", "HINT", "ALLOW"]
     topic: str | None
+    category: str
     score: float
+
+
+TOPIC_CATEGORY_MAP = {
+    # Crypto/scam
+    "cryptocurrency investment scam"          : "SCAM",
+    "bitcoin ethereum pump and dump"          : "SCAM",
+    "send money get rich quick"               : "SCAM",
+    "crypto wallet private key seed phrase"   : "SCAM",
+
+    # Self harm
+    "instructions on how to commit suicide"   : "SELF_HARM",
+    "how many pills to take to overdose"      : "SELF_HARM",
+    "methods to end your life"                : "SELF_HARM",
+    "want to die need help ending it"         : "SELF_HARM",
+
+    # Hate speech
+    "extreme racism hate speech"              : "HATE_SPEECH",
+    "racist slurs targeting black"            : "HATE_SPEECH",
+    "casteist slurs against dalit"            : "HATE_SPEECH",
+    "communal hatred between hindus muslims"  : "HATE_SPEECH",
+    "antisemitic content targeting jewish"    : "HATE_SPEECH",
+
+    # Threats
+    "violent threats to murder assault"       : "THREAT",
+    "i will find you and kill you"            : "THREAT",
+    "bomb explosion attack planning"          : "THREAT",
+
+    # CSAM
+    "child sexual abuse material"             : "CSAM",
+    "sexual content involving underage"       : "CSAM",
+
+    # PII/Phishing
+    "phishing scams stealing credentials"     : "PII",
+    "otp bank account password steal"         : "PII",
+    "fake kyc aadhaar pan verification"       : "PII",
+
+    # Drugs
+    "drug dealing illegal substance"          : "SCAM",
+    "buy weed cocaine heroin online"          : "SCAM",
+}
+
+def get_category_for_topic(topic_label: str) -> str:
+    if not topic_label:
+        return "NONE"
+    for key, category in TOPIC_CATEGORY_MAP.items():
+        if key.lower() in topic_label.lower():
+            return category
+    return "HATE_SPEECH"  # default for unknown FAISS matches
 
 
 class FaissService:
@@ -107,7 +157,7 @@ class FaissService:
         """
         index_data = await cls.get_or_create_index(profile_id, db)
         if not index_data:
-            return FAISSResult(decision="ALLOW", topic=None, score=0.0)
+            return FAISSResult(decision="ALLOW", topic=None, category="NONE", score=0.0)
 
         index, labels = index_data
         query_vec = cls.encode(text)
@@ -119,15 +169,16 @@ class FaissService:
         best_idx = int(indices[0][0])
 
         if best_idx < 0:
-            return FAISSResult(decision="ALLOW", topic=None, score=best_score)
+            return FAISSResult(decision="ALLOW", topic=None, category="NONE", score=best_score)
 
         best_topic = labels[best_idx]
+        category = get_category_for_topic(best_topic)
 
         if best_score >= FAISS_HARD_BLOCK_THRESHOLD:
             logger.debug(f"FAISS HARD BLOCK: score={best_score:.3f}, topic={best_topic[:60]}")
-            return FAISSResult(decision="BLOCK", topic=best_topic, score=best_score)
+            return FAISSResult(decision="BLOCK", topic=best_topic, category=category, score=best_score)
         elif best_score >= FAISS_SOFT_BLOCK_THRESHOLD:
             logger.debug(f"FAISS SOFT HINT: score={best_score:.3f}, topic={best_topic[:60]}")
-            return FAISSResult(decision="HINT", topic=best_topic, score=best_score)
+            return FAISSResult(decision="HINT", topic=best_topic, category=category, score=best_score)
         else:
-            return FAISSResult(decision="ALLOW", topic=None, score=best_score)
+            return FAISSResult(decision="ALLOW", topic=None, category="NONE", score=best_score)

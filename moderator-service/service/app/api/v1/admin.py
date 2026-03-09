@@ -4,8 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import secrets
 import bcrypt
 
+import os
+
 from app.db.session import get_db
 from app.db.models import APIKey
+
+# Load the super-admin token from environment; default to a highly insecure value ONLY for dev
+# In production, this MUST be set to a strong, secret value.
+SUPER_ADMIN_TOKEN = os.getenv("MODERATOR_ADMIN_TOKEN", "dev_super_secret_admin_token_replace_me")
 
 router = APIRouter()
 
@@ -22,9 +28,16 @@ class APIKeyResponse(BaseModel):
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     data: APIKeyCreate,
-    db: AsyncSession = Depends(get_db)
-    # Note: In a real system, this endpoint would be protected by a super-admin token.
+    db: AsyncSession = Depends(get_db),
+    admin_token: str = Depends(lambda x=Depends(lambda req: req.headers.get("Authorization")): x)
 ):
+    # Verify the super-admin token
+    if not admin_token or admin_token.replace("Bearer ", "") != SUPER_ADMIN_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or missing admin token. Endpoint restricted to super-admins."
+        )
+        
     # Generate a strong 32-byte secret
     raw_secret = secrets.token_hex(32)
     

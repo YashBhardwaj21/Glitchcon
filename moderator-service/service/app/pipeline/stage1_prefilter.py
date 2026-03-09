@@ -99,9 +99,10 @@ class ProfanityChecker:
             
         for l in langs_to_check:
             for word in cls._indic_profanity[l]:
-                # Simple substring match for basic Indic profanity
-                # A more robust system would tokenize words properly
-                if word in text_lower:
+                # Use regex with word boundaries to avoid substring false positives
+                # e.g. matching "ass" inside "classic"
+                pattern = rf"\b{re.escape(word)}\b"
+                if re.search(pattern, text_lower):
                     return True, f"profanity_{l}"
                     
         return False, None
@@ -135,13 +136,14 @@ class KeywordChecker:
         # Check hard set first — immediate block, no LLM needed
         for word in words:
             if await redis.sismember(hard_set_key, word):
-                return KeywordResult(decision="BLOCK", matched=word, confidence=1.0)
+                return KeywordResult(decision="BLOCK", category="PROFANITY", matched=word, confidence=1.0)
 
         # Check soft set — flag for LLM review with hint
         soft_matches = [w for w in words if await redis.sismember(soft_set_key, w)]
         if soft_matches:
             return KeywordResult(
                 decision="HINT",
+                category="PROFANITY",
                 matched=soft_matches[0],
                 confidence=0.5,
                 hint=f"Message contains potentially toxic term: '{soft_matches[0]}'"
@@ -158,12 +160,13 @@ class KeywordChecker:
                 
                 for word in orig_words:
                     if await redis.sismember(hien_hard, word):
-                        return KeywordResult(decision="BLOCK", matched=word, confidence=1.0)
+                        return KeywordResult(decision="BLOCK", category="PROFANITY", matched=word, confidence=1.0)
                         
                 hien_soft_matches = [w for w in orig_words if await redis.sismember(hien_soft, w)]
                 if hien_soft_matches:
                     return KeywordResult(
                         decision="HINT",
+                        category="PROFANITY",
                         matched=hien_soft_matches[0],
                         confidence=0.5,
                         hint=f"Message contains potentially toxic Hinglish term: '{hien_soft_matches[0]}'"
@@ -218,12 +221,12 @@ class Stage1Prefilter:
         # 1. Spam flood check (Language-agnostic)
         is_spam = await SpamChecker.check(user_id, profile, redis)
         if is_spam:
-            return PreFilterResult(blocked=True, stage="stage1", matched="spam_limit_exceeded", template_key="spam", detected_language=lang_ctx.code)
+            return PreFilterResult(blocked=True, stage="stage1", category="SPAM", matched="spam_limit_exceeded", template_key="spam", detected_language=lang_ctx.code)
             
         # 2. PII Check (Language-agnostic)
         has_pii, pii_type = PIIChecker.check(text)
         if has_pii:
-            return PreFilterResult(blocked=True, stage="stage1", matched=pii_type, template_key="pii", detected_language=lang_ctx.code)
+            return PreFilterResult(blocked=True, stage="stage1", category="PII", matched=pii_type, template_key="pii", detected_language=lang_ctx.code)
             
         # 3. Profanity Check (Multilingual)
         has_profanity, p_type = ProfanityChecker.check(lang_ctx.normalised_text, lang_ctx)
@@ -231,6 +234,7 @@ class Stage1Prefilter:
             return PreFilterResult(
                 blocked=False, 
                 stage="stage1", 
+                category="PROFANITY",
                 matched=p_type, 
                 template_key="profanity", 
                 detected_language=lang_ctx.code,
@@ -241,9 +245,9 @@ class Stage1Prefilter:
         keyword_result = await KeywordChecker.check(lang_ctx.normalised_text, profile, lang_ctx, redis)
         
         if keyword_result.decision == "BLOCK":
-            return PreFilterResult(blocked=True, stage="stage1", matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code)
+            return PreFilterResult(blocked=True, stage="stage1", category=keyword_result.category, matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code)
         elif keyword_result.decision == "HINT":
-            return PreFilterResult(blocked=False, stage="stage1", matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code, keyword_hint=keyword_result.hint)
+            return PreFilterResult(blocked=False, stage="stage1", category=keyword_result.category, matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code, keyword_hint=keyword_result.hint)
             
         # Passed all fast checks -> Allow it to proceed to LLM
         return PreFilterResult(blocked=False, stage="stage1", detected_language=lang_ctx.code)

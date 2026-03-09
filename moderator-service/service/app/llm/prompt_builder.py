@@ -156,9 +156,26 @@ INSTRUCTIONS:
 Return ONLY a valid JSON object:
 {
   "decision": "ALLOW" or "BLOCK",
+  "category": one of ["HATE_SPEECH", "PROFANITY", "THREAT", "SELF_HARM", 
+              "PII", "SPAM", "SCAM", "SEXUAL", "CSAM", "OFF_TOPIC", 
+              "MISINFORMATION", "NONE"],
   "confidence": 0.0 to 1.0,
   "violated_rule": "brief rule name or null",
   "reason": "one sentence in English explaining the decision",
   "feedback_message": "polite educational message in {{ detected_language }}"
 }
+
+CATEGORY GUIDE:
+- HATE_SPEECH    : Focuses on protected groups. Slurs, dehumanisation, attacks on race/religion/gender/caste.
+- PROFANITY      : General abusive language, swear words, general cursing directed at an individual or general situation.
+- THREAT         : Direct threats of physical harm, violence, or doxxing to an individual.
+- SELF_HARM      : suicide, self-harm instructions or encouragement  
+- PII            : phone numbers, emails, Aadhaar, PAN, UPI, bank details
+- SPAM           : repeated messages, flooding, irrelevant promotion
+- SCAM           : crypto fraud, phishing, fake investment schemes
+- SEXUAL         : explicit sexual content, harassment
+- CSAM           : any sexual content involving minors
+- OFF_TOPIC      : message outside the group's stated topic
+- MISINFORMATION : verifiably false claims presented as fact
+- NONE           : message is clean, no violation
 """

@@ -9,17 +9,34 @@ from app.core.logging import setup_logging, logger
 from app.api.v1 import health
 from app.api.v1 import admin
 from app.api.v1 import profiles
-from app.api.v1 import feedback
 from app.api.v1 import moderate
+from app.api.v1 import feedback
+from app.db.session import AsyncSessionLocal
+from app.db.models import RulesProfile
+from sqlalchemy.future import select
+from app.pipeline.stage3_faiss import FaissService
 
 # Initialize structured logging
 setup_logging()
 
-@asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup actions
     logger.info("Starting AI Moderation Microservice")
-    # Resources initialized here (Redis pool, LLM loading, FAISS loading) in subsequent phases
+    
+    # 1. Load sentence-transformer model immediately
+    FaissService.load_model()
+    
+    # 2. Pre-warm FAISS indices for all profiles
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(RulesProfile.profile_id))
+            profile_ids = result.scalars().all()
+            for pid in profile_ids:
+                await FaissService.reload_index(pid, db)
+        logger.info(f"FAISS pre-warming complete for {len(profile_ids)} profiles.")
+    except Exception as e:
+        logger.error(f"Failed to pre-warm FAISS indices: {e}")
+        
     yield
     # Shutdown actions
     logger.info("Shutting down Moderation Service")
@@ -33,10 +50,14 @@ app = FastAPI(
 )
 
 # CORS configuration
+origins = settings.CORS_ORIGINS
+if isinstance(origins, str):
+    origins = [origins]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=origins,
+    allow_credentials=True if origins != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

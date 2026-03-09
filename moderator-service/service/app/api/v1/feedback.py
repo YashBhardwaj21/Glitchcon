@@ -20,17 +20,17 @@ async def create_feedback_template(
     redis: Redis = Depends(get_redis)
 ):
     """
-    Creates a new feedback message template for a specific language and violation type (template_key).
+    Creates a new feedback message template for a specific language and violation type (rule_type).
     """
     stmt = select(FeedbackTemplate).where(
-        FeedbackTemplate.template_key == template_in.template_key,
-        FeedbackTemplate.language == template_in.language
+        FeedbackTemplate.rule_type == template_in.rule_type,
+        FeedbackTemplate.language_code == template_in.language_code
     )
     result = await db.execute(stmt)
     if result.scalar_one_or_none():
         raise HTTPException(
             status_code=400,
-            detail=f"Template for key '{template_in.template_key}' and language '{template_in.language}' already exists",
+            detail=f"Template for rule '{template_in.rule_type}' and language '{template_in.language_code}' already exists",
         )
         
     db_template = FeedbackTemplate(**template_in.model_dump())
@@ -40,27 +40,27 @@ async def create_feedback_template(
     
     return FeedbackTemplateResponse.model_validate(db_template)
 
-@router.get("/{template_key}/{language}", response_model=FeedbackTemplateResponse)
+@router.get("/{rule_type}/{language_code}", response_model=FeedbackTemplateResponse)
 async def get_feedback_template(
-    template_key: str,
-    language: str,
+    rule_type: str,
+    language_code: str,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(verify_api_key),
     redis: Redis = Depends(get_redis)
 ):
     """
-    Returns the feedback template for a specific key and language.
+    Returns the feedback template for a specific rule_type and language.
     """
-    template = await FeedbackTemplateService.get_template(template_key, language, db, redis)
+    template = await FeedbackTemplateService.get_template(rule_type, language_code, db, redis)
     if not template:
         raise HTTPException(status_code=404, detail="Feedback template not found")
         
     return template
 
-@router.patch("/{template_key}/{language}", response_model=FeedbackTemplateResponse)
+@router.patch("/{rule_type}/{language_code}", response_model=FeedbackTemplateResponse)
 async def update_feedback_template(
-    template_key: str,
-    language: str,
+    rule_type: str,
+    language_code: str,
     template_in: FeedbackTemplateUpdate,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(verify_api_key),
@@ -70,8 +70,8 @@ async def update_feedback_template(
     Updates an existing feedback template and invalidates its cache.
     """
     stmt = select(FeedbackTemplate).where(
-        FeedbackTemplate.template_key == template_key,
-        FeedbackTemplate.language == language
+        FeedbackTemplate.rule_type == rule_type,
+        FeedbackTemplate.language_code == language_code
     )
     result = await db.execute(stmt)
     db_template = result.scalar_one_or_none()
@@ -85,14 +85,14 @@ async def update_feedback_template(
     await db.refresh(db_template)
     
     # Invalidate cache
-    await FeedbackTemplateService.invalidate(template_key, language, redis)
+    await FeedbackTemplateService.invalidate(rule_type, language_code, redis)
     
     return FeedbackTemplateResponse.model_validate(db_template)
 
-@router.delete("/{template_key}/{language}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{rule_type}/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_feedback_template(
-    template_key: str,
-    language: str,
+    rule_type: str,
+    language_code: str,
     db: AsyncSession = Depends(get_db),
     api_key: APIKey = Depends(verify_api_key),
     redis: Redis = Depends(get_redis)
@@ -101,8 +101,8 @@ async def delete_feedback_template(
     Deletes an existing feedback template.
     """
     stmt = select(FeedbackTemplate).where(
-        FeedbackTemplate.template_key == template_key,
-        FeedbackTemplate.language == language
+        FeedbackTemplate.rule_type == rule_type,
+        FeedbackTemplate.language_code == language_code
     )
     result = await db.execute(stmt)
     db_template = result.scalar_one_or_none()
@@ -114,4 +114,4 @@ async def delete_feedback_template(
     await db.commit()
     
     # Invalidate cache
-    await FeedbackTemplateService.invalidate(template_key, language, redis)
+    await FeedbackTemplateService.invalidate(rule_type, language_code, redis)

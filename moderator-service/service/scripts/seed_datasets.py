@@ -3,22 +3,21 @@ import os
 import re
 import sys
 import time
-import requests
+
+# ── stdlib path setup first so app.* imports resolve ────────────────────────
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ── Heavy ML imports are deferred to the functions that need them ────────────
+# (datasets, sentence_transformers, sklearn, numpy)
+# Importing them here would crash the script if the ML deps aren't installed.
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
-from datasets import load_dataset
-from sentence_transformers import SentenceTransformer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
-import numpy as np
-
-# Setup path so we can import from app
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from sqlalchemy import delete, select
 
 from app.db.session import AsyncSessionLocal
-from app.db.models import RulesProfile, BannedTopicEmbedding, PromptTemplate
+from app.db.models import RulesProfile, BannedTopicEmbedding, PromptTemplate, APIKey
+import bcrypt
 from app.core.config import settings
 from app.core.logging import logger
 
@@ -79,6 +78,7 @@ def fetch_wordlist(url: str, retries: int = 3, delay: float = 2.0) -> list[str]:
     (ConnectionResetError 10054). Adding a User-Agent header that looks like a
     browser prevents this reset.
     """
+    import requests
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -108,6 +108,9 @@ def fetch_wordlist(url: str, retries: int = 3, delay: float = 2.0) -> list[str]:
 
 async def seed_smart_keywords(redis: Redis):
     logger.info("Building TF-IDF smart keyword sets from dataset (English)...")
+    from datasets import load_dataset
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
 
     # Load dataset
     en_ds    = load_dataset("textdetox/multilingual_toxicity_dataset", split="en")
@@ -170,6 +173,9 @@ async def seed_smart_keywords(redis: Redis):
 
 async def seed_smart_keywords_hindi(redis: Redis):
     logger.info("Building TF-IDF smart keyword sets from dataset (Hindi/Hinglish)...")
+    from datasets import load_dataset
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
 
     hi_ds  = load_dataset("textdetox/multilingual_toxicity_dataset", split="hi")
     hin_ds = load_dataset("textdetox/multilingual_toxicity_dataset", split="hin")
@@ -240,6 +246,7 @@ async def seed_smart_keywords_hindi(redis: Redis):
 
 async def seed_faiss_topics(db: AsyncSession):
     logger.info("Seeding FAISS Banned Topic Embeddings...")
+    from sentence_transformers import SentenceTransformer
 
     profile_id = "default_test_profile"
 
@@ -362,7 +369,9 @@ GLOBAL RULES (apply to all communities, all languages):
 CRITICAL DISTINCTIONS — read carefully before making any decision:
 - Mentioning a race, religion, gender identity, or nationality is NOT hate speech.
 - Expressing love, support, or neutral facts about a group is NOT hate speech.
-- Hate speech requires ATTACK, DEHUMANIZATION, or SLURS directed AT a group.
+- Hate speech requires ATTACK, DEHUMANIZATION, or SLURS directed AT a group based on protected characteristics (race, religion, etc).
+- If someone uses abusive language/swearing AT an individual without mentioning protected groups, it is PROFANITY, NOT HATE_SPEECH.
+- If someone threatens to kill or harm an individual without group-based slurs, it is THREAT, NOT HATE_SPEECH.
 - A message saying "trans women are beautiful" is SUPPORTIVE, not hateful — ALLOW it.
 - A message saying "God bless you" or "Allah is great" is religious expression — ALLOW it.
 - A message mentioning someone's ethnicity neutrally is NOT racist — ALLOW it.
@@ -386,15 +395,78 @@ INSTRUCTIONS:
 Return ONLY a valid JSON object with no text outside it:
 {
   "decision": "ALLOW" or "BLOCK",
+  "category": one of ["HATE_SPEECH", "PROFANITY", "THREAT", "SELF_HARM", 
+              "PII", "SPAM", "SCAM", "SEXUAL", "CSAM", "OFF_TOPIC", 
+              "MISINFORMATION", "NONE"],
   "confidence": 0.0 to 1.0,
   "violated_rule": "brief rule name or null",
   "reason": "one sentence in English explaining the decision",
   "feedback_message": "polite educational message in {{ detected_language }} or null if ALLOW"
-}"""
+}
+
+CATEGORY GUIDE:
+- HATE_SPEECH    : Focuses on protected groups. Slurs, dehumanisation, attacks on race/religion/gender/caste.
+- PROFANITY      : General abusive language, swear words, general cursing directed at an individual or general situation.
+- THREAT         : Direct threats of physical harm, violence, or doxxing to an individual.
+- SELF_HARM      : suicide, self-harm instructions or encouragement  
+- PII            : phone numbers, emails, Aadhaar, PAN, UPI, bank details
+- SPAM           : repeated messages, flooding, irrelevant promotion
+- SCAM           : crypto fraud, phishing, fake investment schemes
+- SEXUAL         : explicit sexual content, harassment
+- CSAM           : any sexual content involving minors
+- OFF_TOPIC      : message outside the group's stated topic
+- MISINFORMATION : verifiably false claims presented as fact
+- NONE           : message is clean, no violation
+"""
     )
     db.add(template)
     await db.commit()
     logger.info("Default profile and prompt template seeded.")
+
+
+async def seed_api_key(db: AsyncSession):
+    """
+    UPSERT a test API key. Uses SELECT + UPDATE-or-INSERT instead of
+    DELETE + INSERT to avoid UniqueViolation if the record already exists
+    and to avoid resetting DB sequences.
+    """
+    logger.info("Seeding Test API Key...")
+    
+    # Check if a test key already exists
+    result = await db.execute(select(APIKey).where(APIKey.app_name == "Test Internal Key"))
+    existing = result.scalar_one_or_none()
+
+    if existing:
+        actual_id = existing.id
+        test_key = f"{actual_id}.secret123"
+        hashed = bcrypt.hashpw(test_key.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        
+        # Update the hash so it matches <id>.secret123
+        existing.key_hash = hashed
+        existing.rate_limit_per_min = 1000
+        existing.is_active = True
+        await db.commit()
+        await db.refresh(existing)
+        logger.info(f"Existing test API key updated. id={actual_id}  plaintext='{test_key}'")
+    else:
+        # Insert placeholder hash first to claim the ID
+        key = APIKey(
+            app_name="Test Internal Key",
+            key_hash="placeholder_hash",
+            rate_limit_per_min=1000,
+        )
+        db.add(key)
+        await db.flush() # flush to get the ID without committing
+        
+        # Now hash the real key using the generated ID
+        test_key = f"{key.id}.secret123"
+        hashed = bcrypt.hashpw(test_key.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        
+        # Update with correctly formatted hash
+        key.key_hash = hashed
+        await db.commit()
+        await db.refresh(key)
+        logger.info(f"Test API key created. id={key.id}  use key='{test_key}'")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,6 +482,7 @@ async def main():
     async with AsyncSessionLocal() as db:
         try:
             # Order matters: profile must exist before faiss topics (FK constraint)
+            await seed_api_key(db)
             await seed_profile(db)
             await seed_faiss_topics(db)
             await seed_smart_keywords(redis)

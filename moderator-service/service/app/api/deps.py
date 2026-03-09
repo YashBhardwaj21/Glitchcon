@@ -44,7 +44,7 @@ async def verify_api_key(
             detail="Invalid or revoked API Key",
         )
         
-    # Verify the hash
+    # Verify the hash using the exact plaintext key passed in the header
     if not bcrypt.checkpw(api_key.encode('utf-8'), db_api_key.key_hash.encode('utf-8')):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

@@ -13,9 +13,9 @@ from app.pipeline.stage3_faiss import FaissService
 from app.cache.feedback_cache import FeedbackTemplateService
 from app.llm.factory import get_provider
 
-# Instantiate provider once if possible, or we can just fetch it securely.
-# In a real app, this might be injected via dependency, but fetching here is fine.
-_llm_provider = get_provider()
+# We will instantiate the provider lazily inside the engine to prevent
+# startup crashes if environment variables are missing.
+_llm_provider = None
 
 class ModerationEngine:
     @staticmethod
@@ -25,6 +25,10 @@ class ModerationEngine:
         db: AsyncSession,
         redis: Redis
     ) -> ModerationResponse:
+        global _llm_provider
+        if _llm_provider is None:
+            _llm_provider = get_provider()
+
         total_start = time.perf_counter()
 
         # Stage 0: Language Detection
@@ -52,45 +56,58 @@ class ModerationEngine:
                 stage_triggered=prefilter_result.stage,
                 confidence=1.0, # Deterministic rule
                 violated_rule=prefilter_result.template_key or "keyword",
+                category=prefilter_result.category,
                 reason=f"Blocked by Stage 1: {prefilter_result.matched}",
                 feedback_message=feedback,
                 latency_ms=LatencyResult(
                     stage0_lang=latency_stage0,
                     stage1=latency_stage1,
-                    total=total_latency
+                    total=total_latency,
+                    llm_provider=None
                 ),
                 metadata=request.metadata
             )
 
-        # Stage 2 (LLM) & Stage 3 (FAISS) concurrently
-        s23_start = time.perf_counter()
-
-        # Stage 3 runs first as a task — result used to optionally hint Stage 2
-        stage3_task = asyncio.create_task(
-            FaissService.search(lang_ctx.normalised_text, profile.profile_id, profile.faiss_threshold, db)
+        # ── Stage 3 (FAISS) and Stage 2 (LLM) ─────────────────────────────────
+        # These stages run sequentially because Stage 2 (LLM) REQUIRES the output
+        # of Stage 3 (faiss_hint) to inform its prompt. 
+        
+        s3_start = time.perf_counter()
+        
+        # 1. Run FAISS (Semantic Search) first
+        faiss_result = await FaissService.search(
+            lang_ctx.normalised_text, 
+            profile.profile_id, 
+            profile.faiss_threshold, 
+            db
         )
+        latency_stage3 = int((time.perf_counter() - s3_start) * 1000)
 
-        # We await Stage 3 before building the Stage 2 task so we can pass the hint.
-        # Both still run concurrently via asyncio — Stage 3 is typically <50 ms.
-        faiss_result = await stage3_task
-
-        # Build faiss_hint tuple for Stage 2 when Stage 3 is uncertain (HINT zone)
+        # 2. Extract FAISS hint if in the "SOFT" match threshold
         faiss_hint = None
         if faiss_result.decision == "HINT":
             faiss_hint = (faiss_result.topic, faiss_result.score)
 
-        stage2_task = asyncio.create_task(
-            Stage2LLM.process(request.message, profile, lang_ctx, _llm_provider, db, redis, faiss_hint=faiss_hint, keyword_hint=prefilter_result.keyword_hint)
-        )
-
-        llm_response = await stage2_task
-
-        latency_stage23 = int((time.perf_counter() - s23_start) * 1000)
-
-        # In a real setup, you might measure these exactly internally,
-        # but since they run concurrently we'll assign the total parallel time.
-        latency_stage2 = latency_stage23
-        latency_stage3 = latency_stage23
+        # 3. Run LLM Analysis (only if FAISS didn't HARD BLOCK)
+        # If FAISS HARD BLOCKS, we can technically skip the LLM, but to keep the 
+        # pipeline simple and match existing tests, we'll run it or short-circuit here.
+        # For now, we run it sequentially as before but measure latency properly.
+        s2_start = time.perf_counter()
+        
+        llm_response = None
+        if faiss_result.decision != "BLOCK":
+            llm_response = await Stage2LLM.process(
+                request.message, 
+                profile, 
+                lang_ctx, 
+                _llm_provider, 
+                db, 
+                redis, 
+                faiss_hint=faiss_hint, 
+                keyword_hint=prefilter_result.keyword_hint
+            )
+            
+        latency_stage2 = int((time.perf_counter() - s2_start) * 1000)
 
         total_latency = int((time.perf_counter() - total_start) * 1000)
 
@@ -112,6 +129,7 @@ class ModerationEngine:
             stage_triggered = "stage3_faiss"
             confidence = faiss_result.score
             violated_rule = "topic"
+            category = faiss_result.category
             reason = f"Blocked by FAISS semantic override: {faiss_result.topic}"
             feedback = await FeedbackTemplateService.render(
                 "topic", lang_ctx.code, {"topic": faiss_result.topic}, db, redis
@@ -120,6 +138,7 @@ class ModerationEngine:
             # Use Stage 2 LLM decision (whether HINT was sent or not)
             if llm_response:
                 decision = llm_response.decision
+                category = llm_response.category
                 confidence = llm_response.confidence
                 violated_rule = llm_response.violated_rule
                 reason = llm_response.reason
@@ -133,6 +152,7 @@ class ModerationEngine:
 
         return ModerationResponse(
             decision=decision,
+            category=category,
             detected_language=lang_ctx.code,
             stage_triggered=stage_triggered,
             confidence=confidence,
@@ -144,7 +164,8 @@ class ModerationEngine:
                 stage1=latency_stage1,
                 stage2_llm=latency_stage2,
                 stage3_faiss=latency_stage3,
-                total=total_latency
+                total=total_latency,
+                llm_provider=getattr(_llm_provider, "name", "unknown") if llm_response else None
             ),
             metadata=request.metadata
         )

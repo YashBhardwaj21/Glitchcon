@@ -1,10 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, DateTime, Text
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import DeclarativeBase, relationship
 
-Base = declarative_base()
+def get_utc_now():
+    return datetime.now(timezone.utc)
+
+class Base(DeclarativeBase):
+    pass
 
 class RulesProfile(Base):
     __tablename__ = "rules_profiles"
@@ -25,8 +28,8 @@ class RulesProfile(Base):
     llm_confidence_threshold_en = Column(Float, default=0.65)
     llm_confidence_threshold_indic = Column(Float, default=0.60)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+    updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
 
 class BannedTopicEmbedding(Base):
     __tablename__ = "banned_topic_embeddings"
@@ -36,7 +39,7 @@ class BannedTopicEmbedding(Base):
     topic_label = Column(String, nullable=False)
     embedding = Column(ARRAY(Float), nullable=False)  # 384-dim
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 class APIKey(Base):
     __tablename__ = "api_keys"
@@ -48,8 +51,8 @@ class APIKey(Base):
     is_active = Column(Boolean, default=True)
     rate_limit_per_min = Column(Integer, default=60)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
 
 class ModerationLog(Base):
     __tablename__ = "moderation_logs"
@@ -72,7 +75,7 @@ class ModerationLog(Base):
     total_latency_ms = Column(Integer, default=0)
     
     llm_provider = Column(String)              # "groq", "gemini", etc.
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 class PromptTemplate(Base):
     __tablename__ = "prompt_templates"
@@ -83,7 +86,7 @@ class PromptTemplate(Base):
     version = Column(Integer, default=1)
     is_active = Column(Boolean, default=True)
     
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
 
 class FeedbackTemplate(Base):
     __tablename__ = "feedback_templates"
@@ -94,7 +97,7 @@ class FeedbackTemplate(Base):
     template_text = Column(String, nullable=False)
     is_default = Column(Boolean, default=False)
     
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(DateTime(timezone=True), default=get_utc_now, onupdate=get_utc_now)
 
 class LLMProviderLog(Base):
     __tablename__ = "llm_provider_logs"
@@ -108,4 +111,4 @@ class LLMProviderLog(Base):
     success = Column(Boolean, default=True)
     error_message = Column(String)
     
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=get_utc_now)
