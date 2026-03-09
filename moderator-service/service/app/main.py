@@ -8,6 +8,8 @@ from app.core.logging import setup_logging, logger
 
 from app.api.v1 import health
 from app.api.v1 import admin
+from app.api.v1 import profiles
+from app.api.v1 import feedback
 
 # Initialize structured logging
 setup_logging()
@@ -50,3 +52,5 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Routers
 app.include_router(health.router, prefix="/v1", tags=["system"])
 app.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
+app.include_router(profiles.router, prefix="/v1/profiles", tags=["profiles"])
+app.include_router(feedback.router, prefix="/v1/feedback", tags=["feedback"])
