@@ -8,11 +8,14 @@ Quick-start (async)::
     import asyncio
     from moderator_sdk import ModerationClient
     from moderator_sdk.models import ModerationRequest
+    from moderator_sdk.retry import RetryConfig, CircuitBreaker
 
     async def main():
         async with ModerationClient(
             base_url="http://localhost:8001",
             api_key="1.your_key_here",
+            retry=RetryConfig(max_retries=3, base_delay=0.5),
+            circuit_breaker=CircuitBreaker(failure_threshold=5, recovery_timeout=30),
         ) as client:
             resp = await client.moderate(
                 ModerationRequest(
@@ -25,12 +28,12 @@ Quick-start (async)::
 
     asyncio.run(main())
 
-Quick-start (sync)::
+Quick-start (sync, e.g. from a Celery task)::
 
     from moderator_sdk import SyncModerationClient
     from moderator_sdk.models import ModerationRequest
 
-    client = SyncModerationClient(base_url="http://localhost:8001", api_key="1.your_key")
+    client = SyncModerationClient(base_url="http://localhost:8001", api_key="1.abc")
     resp = client.moderate(ModerationRequest(message="hi", profile_id="wele_general", user_id="u1"))
     print(resp.decision)
 """
@@ -62,6 +65,7 @@ from moderator_sdk.models import (
     ModerationRequest,
     ModerationResponse,
 )
+from moderator_sdk.retry import CircuitBreaker, RetryConfig, DEFAULT_RETRY
 
 __version__ = "0.1.0"
 __all__ = ["ModerationClient", "SyncModerationClient"]
@@ -69,7 +73,7 @@ __all__ = ["ModerationClient", "SyncModerationClient"]
 logger = logging.getLogger("moderator_sdk")
 
 
-# ─── Status→Exception mapping ────────────────────────────────────────────────
+# ─── Status → Exception mapping ───────────────────────────────────────────────
 
 def _raise_for_status(response: httpx.Response, body: dict) -> None:
     """Convert a non-2xx response into a typed SDK exception."""
@@ -91,7 +95,6 @@ def _raise_for_status(response: httpx.Response, body: dict) -> None:
     if response.status_code >= 500:
         raise InternalServiceError(str(detail), response.status_code, request_id)
 
-    # Catch-all for unexpected 4xx
     raise NetworkError(
         f"Unexpected HTTP {response.status_code}: {detail}",
         response.status_code,
@@ -105,23 +108,23 @@ class ModerationClient:
     """
     Async HTTP client for the AI Moderation Microservice.
 
-    Usage via async context manager (recommended — ensures connection cleanup)::
+    Supports exponential-backoff retry and a three-state circuit breaker
+    out of the box.  Use as an async context manager for automatic connection
+    cleanup::
 
         async with ModerationClient(base_url=..., api_key=...) as client:
             result = await client.moderate(req)
 
-    Or manage the lifecycle manually::
-
-        client = ModerationClient(...)
-        await client.open()
-        ...
-        await client.close()
-
     Args:
-        base_url:   Service base URL, e.g. ``"http://localhost:8001"``.
-        api_key:    API key string in ``"<id>.<secret>"`` format.
-        timeout:    Per-request timeout in seconds (default: 10.0).
-        http2:      Enable HTTP/2 multiplexing (default: False).
+        base_url:        Service base URL, e.g. ``"http://localhost:8001"``.
+        api_key:         API key in ``"<id>.<secret>"`` format.
+        timeout:         Per-request timeout in seconds (default: 10.0).
+        retry:           :class:`~moderator_sdk.retry.RetryConfig` instance.
+                         Defaults to 3 retries with 0.5 s base delay.
+                         Pass ``RetryConfig(max_retries=0)`` to disable.
+        circuit_breaker: Optional :class:`~moderator_sdk.retry.CircuitBreaker`.
+                         If omitted, no circuit breaking is applied.
+        http2:           Enable HTTP/2 multiplexing (default: False).
     """
 
     _MODERATE_PATH = "/v1/moderate/"
@@ -132,33 +135,37 @@ class ModerationClient:
         base_url: str,
         api_key: str,
         timeout: float = 10.0,
+        retry: RetryConfig = DEFAULT_RETRY,
+        circuit_breaker: Optional[CircuitBreaker] = None,
         http2: bool = False,
     ):
-        self._base_url = base_url.rstrip("/")
-        self._api_key  = api_key
-        self._timeout  = timeout
-        self._http2    = http2
+        self._base_url        = base_url.rstrip("/")
+        self._api_key         = api_key
+        self._timeout         = timeout
+        self._retry           = retry
+        self._circuit_breaker = circuit_breaker
+        self._http2           = http2
         self._client: Optional[httpx.AsyncClient] = None
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def open(self) -> None:
-        """Initialise the underlying httpx.AsyncClient. Called automatically by __aenter__."""
+        """Initialise the underlying httpx.AsyncClient."""
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self._base_url,
                 timeout=self._timeout,
                 http2=self._http2,
                 headers={
-                    "X-API-Key": self._api_key,
+                    "X-API-Key":    self._api_key,
                     "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "User-Agent": f"moderator-sdk/{__version__}",
+                    "Accept":       "application/json",
+                    "User-Agent":   f"moderator-sdk/{__version__}",
                 },
             )
 
     async def close(self) -> None:
-        """Cleanly close the HTTP client and release connections."""
+        """Close the HTTP client and release connections."""
         if self._client is not None:
             await self._client.aclose()
             self._client = None
@@ -170,13 +177,10 @@ class ModerationClient:
     async def __aexit__(self, *_) -> None:
         await self.close()
 
-    # ── Internal helper ───────────────────────────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _post(self, path: str, payload: dict) -> dict:
-        """
-        Execute a POST request and return the parsed JSON body.
-        Raises a typed SDK exception on any error.
-        """
+    async def _raw_post(self, path: str, payload: dict) -> dict:
+        """Single POST attempt — no retry logic here."""
         if self._client is None:
             await self.open()
 
@@ -185,7 +189,9 @@ class ModerationClient:
         except httpx.TimeoutException as exc:
             raise NetworkError(f"Request timed out: {exc}") from exc
         except httpx.ConnectError as exc:
-            raise NetworkError(f"Cannot connect to moderation service at {self._base_url}: {exc}") from exc
+            raise NetworkError(
+                f"Cannot connect to moderation service at {self._base_url}: {exc}"
+            ) from exc
         except httpx.RequestError as exc:
             raise NetworkError(f"HTTP request failed: {exc}") from exc
 
@@ -199,8 +205,8 @@ class ModerationClient:
 
         return body
 
-    async def _get(self, path: str) -> dict:
-        """Execute a GET and return parsed JSON."""
+    async def _raw_get(self, path: str) -> dict:
+        """Single GET attempt — no retry logic here."""
         if self._client is None:
             await self.open()
 
@@ -219,6 +225,59 @@ class ModerationClient:
 
         return body
 
+    async def _post(self, path: str, payload: dict) -> dict:
+        """
+        POST with retry logic and optional circuit breaker.
+
+        Retries on retryable status codes and network errors as configured.
+        Non-retryable errors (4xx except 429) are re-raised immediately.
+        """
+        retryable_exc = (NetworkError, ServiceUnavailableError, InternalServiceError)
+
+        async def _attempt():
+            last_exc: Exception | None = None
+            for attempt in range(self._retry.max_retries + 1):
+                try:
+                    return await self._raw_post(path, payload)
+                except RateLimitError:
+                    raise  # Never retry 429 automatically — caller must back off
+                except AuthenticationError:
+                    raise  # Credentials won't fix themselves on retry
+                except ForbiddenError:
+                    raise
+                except ProfileNotFoundError:
+                    raise
+                except ValidationError:
+                    raise
+                except retryable_exc as exc:
+                    last_exc = exc
+                    status = getattr(exc, "status_code", None)
+                    if attempt >= self._retry.max_retries or \
+                       not self._retry.should_retry(status):
+                        raise
+                    delay = self._retry.delay_for(attempt)
+                    logger.warning(
+                        "Retry %d/%d for %s in %.2fs — %s",
+                        attempt + 1,
+                        self._retry.max_retries,
+                        path,
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+
+            raise last_exc  # Should never reach here
+
+        if self._circuit_breaker is not None:
+            return await self._circuit_breaker.call(_attempt)
+        return await _attempt()
+
+    async def _get(self, path: str) -> dict:
+        """GET with circuit breaker passthrough (no retry — health checks are one-shot)."""
+        if self._circuit_breaker is not None:
+            return await self._circuit_breaker.call(self._raw_get, path)
+        return await self._raw_get(path)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def moderate(self, request: ModerationRequest) -> ModerationResponse:
@@ -226,18 +285,20 @@ class ModerationClient:
         Submit a single message for moderation.
 
         Args:
-            request: :class:`ModerationRequest` with message, profile_id, user_id.
+            request: :class:`~moderator_sdk.models.ModerationRequest`.
 
         Returns:
-            :class:`ModerationResponse` with decision, detected_language, latency, etc.
+            :class:`~moderator_sdk.models.ModerationResponse` with decision and
+            per-stage latency breakdown.
 
         Raises:
-            :exc:`AuthenticationError`: Invalid or missing API key.
-            :exc:`ProfileNotFoundError`: The requested profile_id does not exist.
-            :exc:`RateLimitError`: API key rate limit exceeded.
-            :exc:`ServiceUnavailableError`: Service is down or restarting.
-            :exc:`NetworkError`: Connection failure or timeout.
-            :exc:`ResponseParseError`: Unexpected response shape.
+            :exc:`~moderator_sdk.exceptions.AuthenticationError`: 401.
+            :exc:`~moderator_sdk.exceptions.ProfileNotFoundError`: 404.
+            :exc:`~moderator_sdk.exceptions.RateLimitError`: 429.
+            :exc:`~moderator_sdk.exceptions.ServiceUnavailableError`: 503 / after retries.
+            :exc:`~moderator_sdk.exceptions.NetworkError`: Connection/timeout.
+            :exc:`~moderator_sdk.exceptions.CircuitOpenError`: Circuit breaker is OPEN.
+            :exc:`~moderator_sdk.exceptions.ResponseParseError`: Unexpected response shape.
         """
         logger.debug(
             "moderate | profile=%s user=%s len=%d",
@@ -251,7 +312,9 @@ class ModerationClient:
         try:
             return ModerationResponse.model_validate(body)
         except Exception as exc:
-            raise ResponseParseError(f"Could not parse response: {exc}. Body: {body}") from exc
+            raise ResponseParseError(
+                f"Could not parse moderation response: {exc}. Body: {body}"
+            ) from exc
 
     async def batch_moderate(
         self,
@@ -260,27 +323,27 @@ class ModerationClient:
         """
         Submit multiple messages for moderation concurrently.
 
-        Failures on individual items are collected into ``BatchModerationResult.errors``
-        rather than raising, so a single bad message does not abort the entire batch.
+        Individual failures are collected in ``BatchModerationResult.errors``
+        rather than aborting the entire batch.  The circuit breaker applies
+        to each individual call.
 
         Args:
-            requests: List of :class:`ModerationRequest` objects.
+            requests: List of :class:`~moderator_sdk.models.ModerationRequest`.
 
         Returns:
-            :class:`BatchModerationResult` with ``.results`` and ``.errors``.
+            :class:`~moderator_sdk.models.BatchModerationResult`.
         """
-        async def _safe_moderate(req: ModerationRequest):
+        async def _safe(req: ModerationRequest):
             try:
                 return await self.moderate(req), None
             except Exception as exc:  # noqa: BLE001
-                status_code = getattr(exc, "status_code", None)
                 return None, ModerationError(
                     request=req,
                     error=str(exc),
-                    status_code=status_code,
+                    status_code=getattr(exc, "status_code", None),
                 )
 
-        pairs = await asyncio.gather(*[_safe_moderate(r) for r in requests])
+        pairs = await asyncio.gather(*[_safe(r) for r in requests])
 
         results, errors = [], []
         for ok, err in pairs:
@@ -302,17 +365,20 @@ class ModerationClient:
         Call GET /v1/health on the moderation service.
 
         Returns:
-            :class:`HealthStatus` with db/redis/llm reachability flags.
+            :class:`~moderator_sdk.models.HealthStatus`.
 
         Raises:
-            :exc:`ServiceUnavailableError`: If the service responds with 503.
-            :exc:`NetworkError`: If the service is unreachable.
+            :exc:`~moderator_sdk.exceptions.ServiceUnavailableError`: 503.
+            :exc:`~moderator_sdk.exceptions.NetworkError`: Unreachable.
+            :exc:`~moderator_sdk.exceptions.CircuitOpenError`: Circuit is OPEN.
         """
         body = await self._get(self._HEALTH_PATH)
         try:
             return HealthStatus.model_validate(body)
         except Exception as exc:
-            raise ResponseParseError(f"Could not parse health response: {exc}") from exc
+            raise ResponseParseError(
+                f"Could not parse health response: {exc}"
+            ) from exc
 
 
 # ─── Sync Wrapper ─────────────────────────────────────────────────────────────
@@ -321,21 +387,22 @@ class SyncModerationClient:
     """
     Synchronous wrapper around :class:`ModerationClient`.
 
-    Intended for non-async frameworks (Django, Flask, Celery tasks).
-    Creates its own event loop per call — do **not** use this inside an
-    already-running async event loop.
+    For non-async callers such as Django views, Flask routes, or Celery tasks.
+    Accepts the same retry and circuit-breaker parameters as the async client.
 
-    Args:
-        base_url, api_key, timeout: Same semantics as :class:`ModerationClient`.
+    .. warning::
+        Do **not** call this from inside a running async event loop (e.g.
+        from an async FastAPI endpoint) — use :class:`ModerationClient`
+        directly instead.
 
     Example::
 
-        from moderator_sdk import SyncModerationClient
-        from moderator_sdk.models import ModerationRequest
-
-        client = SyncModerationClient(base_url="http://localhost:8001", api_key="1.abc")
-        resp = client.moderate(ModerationRequest(message="hi", profile_id="wele_general", user_id="u1"))
-        print(resp.decision)
+        client = SyncModerationClient(
+            base_url="http://localhost:8001",
+            api_key="1.abc",
+            retry=RetryConfig(max_retries=2),
+        )
+        resp = client.moderate(ModerationRequest(...))
     """
 
     def __init__(
@@ -343,43 +410,51 @@ class SyncModerationClient:
         base_url: str,
         api_key: str,
         timeout: float = 10.0,
+        retry: RetryConfig = DEFAULT_RETRY,
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         self._async_client = ModerationClient(
             base_url=base_url,
             api_key=api_key,
             timeout=timeout,
+            retry=retry,
+            circuit_breaker=circuit_breaker,
         )
 
-    def _run(self, coro):
-        """Run a coroutine, reusing a loop if one is already running via anyio/nest_asyncio."""
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _run(coro):
+        """Run a coroutine safely regardless of whether a loop exists."""
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                # Inside Celery concurrency with gevent/threads — use a new loop
+                # e.g. Celery + gevent   → offload to a fresh thread with its own loop
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, coro)
-                    return future.result()
+                    return pool.submit(asyncio.run, coro).result()
             return loop.run_until_complete(coro)
         except RuntimeError:
             return asyncio.run(coro)
 
+    # ── Public API ────────────────────────────────────────────────────────────
+
     def moderate(self, request: ModerationRequest) -> ModerationResponse:
-        """Synchronous version of :meth:`ModerationClient.moderate`."""
+        """Synchronous :meth:`ModerationClient.moderate`."""
         async def _call():
             async with self._async_client:
                 return await self._async_client.moderate(request)
         return self._run(_call())
 
     def batch_moderate(self, requests: List[ModerationRequest]) -> BatchModerationResult:
-        """Synchronous version of :meth:`ModerationClient.batch_moderate`."""
+        """Synchronous :meth:`ModerationClient.batch_moderate`."""
         async def _call():
             async with self._async_client:
                 return await self._async_client.batch_moderate(requests)
         return self._run(_call())
 
     def health_check(self) -> HealthStatus:
-        """Synchronous version of :meth:`ModerationClient.health_check`."""
+        """Synchronous :meth:`ModerationClient.health_check`."""
         async def _call():
             async with self._async_client:
                 return await self._async_client.health_check()
