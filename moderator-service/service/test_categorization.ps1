@@ -11,12 +11,12 @@ param(
     [int]$Level = 5
 )
 
-$BASE    = "http://localhost:8001"
+$BASE = "http://localhost:8001"
 $API_KEY = "1.secret123"
 
 $PASS = 0
 $FAIL = 0
-$ERR  = 0
+$ERR = 0
 
 function Test-Message($label, $msg, $expectedDecision, $expectedCategory, $level) {
     if ($level -gt $Level) { return }
@@ -29,8 +29,8 @@ function Test-Message($label, $msg, $expectedDecision, $expectedCategory, $level
 
     try {
         $r = Invoke-RestMethod -Uri "$BASE/v1/moderate/" -Method POST `
-             -Headers @{"X-API-Key"=$API_KEY} `
-             -ContentType "application/json" -Body $body
+            -Headers @{"X-API-Key" = $API_KEY } `
+            -ContentType "application/json" -Body $body
 
         $decisionOk = $r.decision -eq $expectedDecision
         $categoryOk = $r.category -eq $expectedCategory
@@ -50,7 +50,8 @@ function Test-Message($label, $msg, $expectedDecision, $expectedCategory, $level
             }
         }
         Write-Host ""
-    } catch {
+    }
+    catch {
         $script:ERR++
         Write-Host "💥 ERROR  [L$level] $label"
         Write-Host "         $($_.Exception.Message)"
