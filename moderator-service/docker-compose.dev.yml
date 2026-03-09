@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: moderator_postgres_dev
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-moderator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-moderator_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-moderator_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-moderator} -d $${POSTGRES_DB:-moderator_db}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: moderator_redis_dev
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  service:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    container_name: moderator_api_dev
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-moderator}:${POSTGRES_PASSWORD:-moderator_pass}@postgres:5432/${POSTGRES_DB:-moderator_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./service/app:/app/app:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    container_name: moderator_celery_dev
+    restart: always
+    command: celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-moderator}:${POSTGRES_PASSWORD:-moderator_pass}@postgres:5432/${POSTGRES_DB:-moderator_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    volumes:
+      - ./service/app:/app/app:ro
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  flower:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    container_name: moderator_flower_dev
+    restart: always
+    command: celery -A app.tasks.celery_app flower --port=5555
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data_dev:
+  redis_data_dev:
