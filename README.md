@@ -563,8 +563,8 @@ make docker-down   # docker-compose down
 | English | `en` | ✅ | ✅ | Full support |
 | Hindi (Devanagari) | `hi` | ✅ | ✅ | Normalised before lookup |
 | Hinglish (Roman) | `hi-en` | ✅ | ✅ | Detected by heuristic |
-| Tamil | `ta` | ✅ | ✅ | Gemini preferred |
-| Telugu | `te` | ✅ | ✅ | Gemini preferred |
-| Kannada | `kn` | ✅ | ✅ | Gemini preferred |
-| Malayalam | `ml` | ✅ | ✅ | Gemini preferred |
+| Tamil | `ta` | ✅ | ✅ | LLM preferred |
+| Telugu | `te` | ✅ | ✅ | LLM preferred |
+| Kannada | `kn` | ✅ | ✅ | LLM preferred |
+| Malayalam | `ml` | ✅ | ✅ | LLM preferred |
 
