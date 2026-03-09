@@ -27,19 +27,20 @@ class Stage2LLM:
         lang_ctx: LanguageContext,
         provider: BaseLLMProvider,
         db: AsyncSession,
-        redis: Redis
+        redis: Redis,
+        faiss_hint: tuple[str, float] | None = None,
+        keyword_hint: str | None = None,
     ) -> ModerationLLMResponse | None:
         start_time = time.perf_counter()
         
         try:
-            # 1. Build multilingual prompt
-            prompt = await PromptBuilder.build(message, profile, lang_ctx, db, redis)
+            # 1. Build multilingual prompt (with optional FAISS and keyword semantic hints)
+            prompt = await PromptBuilder.build(message, profile, lang_ctx, db, redis, faiss_hint=faiss_hint, keyword_hint=keyword_hint)
             
-            # 2. Call LLM with timeout (hard timeout managed by provider internally as well, 
-            # but we can wrap it here too if needed)
+            # 2. Call LLM with timeout (increased to handle retries)
             response: ModerationLLMResponse = await asyncio.wait_for(
                 provider.moderate(prompt),
-                timeout=4.5
+                timeout=15.0
             )
             
             # 3. Confidence Gating based on language

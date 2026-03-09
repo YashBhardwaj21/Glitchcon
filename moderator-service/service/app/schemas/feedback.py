@@ -2,15 +2,15 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 class FeedbackTemplateBase(BaseModel):
-    template_key: str
-    language: str
-    message_template: str
+    rule_type: str
+    language_code: str
+    template_text: str
 
 class FeedbackTemplateCreate(FeedbackTemplateBase):
     pass
 
 class FeedbackTemplateUpdate(BaseModel):
-    message_template: str
+    template_text: str
 
 class FeedbackTemplateResponse(FeedbackTemplateBase):
     id: int

@@ -1,11 +1,36 @@
 import faiss
 import numpy as np
+from typing import NamedTuple, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sentence_transformers import SentenceTransformer
 
 from app.db.models import BannedTopicEmbedding
 from app.core.logging import logger
+
+# ─── Soft-block thresholds ────────────────────────────────────────────────────
+# HARD: certain violation — block immediately without LLM
+# SOFT: uncertain — pass to LLM with a semantic hint
+# Below SOFT: clean — LLM runs without any hint
+FAISS_HARD_BLOCK_THRESHOLD = 0.82
+FAISS_SOFT_BLOCK_THRESHOLD = 0.65
+
+
+class FAISSResult(NamedTuple):
+    """
+    Three-state result from Stage 3 semantic search.
+
+    decision:
+        "BLOCK" — score >= HARD threshold.  Block immediately.
+        "HINT"  — score in [SOFT, HARD).   Pass to LLM with a semantic hint.
+        "ALLOW" — score < SOFT threshold.  LLM runs without any hint.
+    topic:  matched banned topic label (or None when decision is ALLOW)
+    score:  cosine similarity (0.0–1.0)
+    """
+    decision: Literal["BLOCK", "HINT", "ALLOW"]
+    topic: str | None
+    score: float
+
 
 class FaissService:
     _model = None
@@ -34,10 +59,10 @@ class FaissService:
         dim = len(embeddings[0].embedding)
         # Inner Product for Cosine Similarity (vectors must be normalized)
         index = faiss.IndexFlatIP(dim)
-        
+
         vectors = []
         labels = []
-        
+
         for emb in embeddings:
             vec = np.array(emb.embedding, dtype=np.float32)
             # Normalize vector in-place
@@ -45,10 +70,10 @@ class FaissService:
             faiss.normalize_L2(vec_2d)
             vectors.append(vec_2d[0])
             labels.append(emb.topic_label)
-            
+
         vector_matrix = np.vstack(vectors)
         index.add(vector_matrix)
-        
+
         cls._indices[profile_id] = (index, labels)
         logger.info(f"Loaded {len(vectors)} FAISS embeddings for profile {profile_id}")
 
@@ -68,25 +93,41 @@ class FaissService:
         return vec_np
 
     @classmethod
-    async def search(cls, text: str, profile_id: str, threshold: float, db: AsyncSession) -> tuple[bool, str | None, float]:
+    async def search(cls, text: str, profile_id: str, threshold: float, db: AsyncSession) -> FAISSResult:
         """
         Searches the FAISS index for semantic similarity.
-        Returns: (is_blocked, matched_topic_label, confidence_score)
+
+        Uses a two-threshold approach:
+          - score >= FAISS_HARD_BLOCK_THRESHOLD (0.82) → BLOCK immediately
+          - score in [FAISS_SOFT_BLOCK_THRESHOLD (0.65), 0.82) → HINT to LLM
+          - score < 0.65 → ALLOW (topic not detected)
+
+        Note: the `threshold` parameter from the profile config is retained for
+        API compatibility but the module-level constants take precedence now.
         """
         index_data = await cls.get_or_create_index(profile_id, db)
         if not index_data:
-            return False, None, 0.0
-            
+            return FAISSResult(decision="ALLOW", topic=None, score=0.0)
+
         index, labels = index_data
         query_vec = cls.encode(text)
-        
+
         # Look for top 1 match
         scores, indices = index.search(query_vec, 1)
-        
+
         best_score = float(scores[0][0])
         best_idx = int(indices[0][0])
-        
-        if best_idx >= 0 and best_score >= threshold:
-            return True, labels[best_idx], best_score
-            
-        return False, None, best_score
+
+        if best_idx < 0:
+            return FAISSResult(decision="ALLOW", topic=None, score=best_score)
+
+        best_topic = labels[best_idx]
+
+        if best_score >= FAISS_HARD_BLOCK_THRESHOLD:
+            logger.debug(f"FAISS HARD BLOCK: score={best_score:.3f}, topic={best_topic[:60]}")
+            return FAISSResult(decision="BLOCK", topic=best_topic, score=best_score)
+        elif best_score >= FAISS_SOFT_BLOCK_THRESHOLD:
+            logger.debug(f"FAISS SOFT HINT: score={best_score:.3f}, topic={best_topic[:60]}")
+            return FAISSResult(decision="HINT", topic=best_topic, score=best_score)
+        else:
+            return FAISSResult(decision="ALLOW", topic=None, score=best_score)

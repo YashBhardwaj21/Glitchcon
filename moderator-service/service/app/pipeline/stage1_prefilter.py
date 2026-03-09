@@ -4,18 +4,51 @@ from pathlib import Path
 from redis.asyncio import Redis
 from better_profanity import profanity
 
-from app.schemas.pipeline import PreFilterResult
+from app.schemas.pipeline import PreFilterResult, KeywordResult
 from app.schemas.profile import RulesProfileResponse
 from app.schemas.i18n import LanguageContext
 
+# ─── Leet-speak / bypass normaliser ─────────────────────────────────────────
+_LEET_MAP = {
+    '@': 'a', '3': 'e', '1': 'i', '0': 'o',
+    '5': 's', '7': 't', '$': 's', '!': 'i',
+    '+': 't', '|': 'l',
+}
+
+def normalise_for_lookup(text: str) -> str:
+    """
+    Normalise text to counter common keyword-filter bypass attempts:
+      - Leet-speak substitution:  @ssh0le  → asshole
+      - Repeated characters:      fuuuuck  → fuck
+      - Spaces between letters:   f u c k  → fuck
+      - Punctuation separators:   f.u.c.k  → fuck
+    Called on ENGLISH / Hinglish text only — not Devanagari.
+    """
+    text = text.lower()
+    for char, replacement in _LEET_MAP.items():
+        text = text.replace(char, replacement)
+    # Collapse 3+ repeated characters: "fuuuuck" → "fuck"
+    text = re.sub(r'(.)\1{2,}', r'\1', text)
+    # Remove spaces sandwiched between single letters: "f u c k" → "fuck"
+    # Uses a lookaround to only match sequences of isolated single letters.
+    text = re.sub(r'(?<![a-z])(?:[a-z]\s+)+[a-z](?![a-z])', lambda m: m.group(0).replace(' ', ''), text)
+    
+    # Remove punctuation used as separators between single letters: "f.u.c.k" → "fuck"
+    text = re.sub(r'(?<![a-z])(?:[a-z][.\-_*]+)+[a-z](?![a-z])', lambda m: re.sub(r'[.\-_*]', '', m.group(0)), text)
+    return text
+
+
 # Compile PII Regexes once at module load
 PII_PATTERNS = {
-    "phone": re.compile(r"\b[6-9]\d{9}\b"),
-    "email": re.compile(r"[\w.-]+@[\w.-]+\.\w{2,}"),
-    "aadhaar": re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
-    "pan": re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
-    "upi": re.compile(r"[\w.+-]+@[a-z]+"),
-    "api_key": re.compile(r"(?:sk|pk|api)[_-][a-zA-Z0-9]{20,}")
+    "phone":        re.compile(r"\b[6-9]\d{9}\b"),
+    "phone_intl":   re.compile(r"\b(?:\+?91[\s-]?)?[6-9]\d{9}\b"),   # +91 prefix
+    "email":        re.compile(r"[\w.-]+@[\w.-]+\.\w{2,}"),
+    "aadhaar":      re.compile(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}\b"),
+    "pan":          re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"),
+    "upi":          re.compile(r"[\w.+-]+@[a-z]+"),
+    "api_key":      re.compile(r"(?:sk|pk|api)[_-][a-zA-Z0-9]{20,}"),
+    "whatsapp":     re.compile(r"https?://(?:wa\.me|api\.whatsapp\.com)/\d+"),
+    "card_number":  re.compile(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b"),  # 16-digit card
 }
 
 class ProfanityChecker:
@@ -85,41 +118,58 @@ class PIIChecker:
 
 class KeywordChecker:
     @staticmethod
-    async def check(text: str, profile: RulesProfileResponse, lang_ctx: LanguageContext, redis: Redis) -> tuple[bool, str | None]:
-        text_lower = text.lower()
-        words = text_lower.split()
-        if not words:
-            return False, None
-            
+    async def check(
+        text: str,
+        profile: RulesProfileResponse,
+        lang_ctx: LanguageContext,
+        redis: Redis
+    ) -> KeywordResult:
+        # text here is already lowercased and base-normalised (depends on calling code)
+        # Apply leet-speak / bypass normalisation
+        words = set(normalise_for_lookup(text).lower().split()) | set(text.lower().split())
+        
         lang = lang_ctx.code if lang_ctx.code in profile.supported_languages else "en"
-        set_key = f"banned:{profile.profile_id}:{lang}"
-        
-        # We can optimize by checking the exact words in the redis set, 
-        # or scanning the redis set to check if they exist in the text.
-        # For small banned lists (hundreds of words), smembers and local matching is fast.
-        
-        banned_words = await redis.smembers(set_key)
-        
-        for banned_word in banned_words:
-            # simple substring search for keywords (e.g. "dotnet" matches "I need dotnet help")
-            if banned_word in text_lower:
-                return True, banned_word
-                
-        # If the text was transliterated from roman script, check the original text too
-        # Example: if "nahi karna" → "नहीं करना" didn't match native Hindi list, 
-        # check if "nahi karna" matches the Hinglish list.
+        hard_set_key  = f"keywords:{lang}:hard"
+        soft_set_key  = f"keywords:{lang}:soft"
+
+        # Check hard set first — immediate block, no LLM needed
+        for word in words:
+            if await redis.sismember(hard_set_key, word):
+                return KeywordResult(decision="BLOCK", matched=word, confidence=1.0)
+
+        # Check soft set — flag for LLM review with hint
+        soft_matches = [w for w in words if await redis.sismember(soft_set_key, w)]
+        if soft_matches:
+            return KeywordResult(
+                decision="HINT",
+                matched=soft_matches[0],
+                confidence=0.5,
+                hint=f"Message contains potentially toxic term: '{soft_matches[0]}'"
+            )
+
+        # If transliterated from Roman script, also check Hinglish list
         if lang_ctx.is_transliterated and lang_ctx.normalised_text != text:
-            # Check using Hinglish keywords if hi-en is supported
             if "hi-en" in profile.supported_languages:
-                hien_set_key = f"banned:{profile.profile_id}:hi-en"
-                hien_banned = await redis.smembers(hien_set_key)
-                # Use original un-normalised text
-                orig_lower = text.lower()
-                for banned_word in hien_banned:
-                    if banned_word in orig_lower:
-                        return True, banned_word
+                hien_hard = f"keywords:hi-en:hard"
+                hien_soft = f"keywords:hi-en:soft"
+                
+                # For basic transliteration fallback, we also check the un-normalised original text
+                orig_words = set(normalise_for_lookup(text).lower().split()) | set(text.lower().split())
+                
+                for word in orig_words:
+                    if await redis.sismember(hien_hard, word):
+                        return KeywordResult(decision="BLOCK", matched=word, confidence=1.0)
                         
-        return False, None
+                hien_soft_matches = [w for w in orig_words if await redis.sismember(hien_soft, w)]
+                if hien_soft_matches:
+                    return KeywordResult(
+                        decision="HINT",
+                        matched=hien_soft_matches[0],
+                        confidence=0.5,
+                        hint=f"Message contains potentially toxic Hinglish term: '{hien_soft_matches[0]}'"
+                    )
+
+        return KeywordResult(decision="ALLOW", matched=None, confidence=0.0)
 
 
 class SpamChecker:
@@ -180,10 +230,13 @@ class Stage1Prefilter:
         if has_profanity:
             return PreFilterResult(blocked=True, stage="stage1", matched=p_type, template_key="profanity", detected_language=lang_ctx.code)
             
-        # 4. Keyword Check (Per-language Redis SETs)
-        has_keyword, k_word = await KeywordChecker.check(lang_ctx.normalised_text, profile, lang_ctx, redis)
-        if has_keyword:
-            return PreFilterResult(blocked=True, stage="stage1", matched=k_word, template_key="keyword", detected_language=lang_ctx.code)
+        # 4. Keyword Check (Per-language TF-IDF Redis SETs)
+        keyword_result = await KeywordChecker.check(lang_ctx.normalised_text, profile, lang_ctx, redis)
+        
+        if keyword_result.decision == "BLOCK":
+            return PreFilterResult(blocked=True, stage="stage1", matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code)
+        elif keyword_result.decision == "HINT":
+            return PreFilterResult(blocked=False, stage="stage1", matched=keyword_result.matched, template_key="keyword", detected_language=lang_ctx.code, keyword_hint=keyword_result.hint)
             
         # Passed all fast checks -> Allow it to proceed to LLM
         return PreFilterResult(blocked=False, stage="stage1", detected_language=lang_ctx.code)

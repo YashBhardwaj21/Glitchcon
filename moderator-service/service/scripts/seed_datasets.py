@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import sys
 import time
 import requests
@@ -9,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+import numpy as np
 
 # Setup path so we can import from app
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,6 +39,29 @@ FALLBACK_HI_WORDS = [
     "मादरचोद", "भडवा", "रंडी", "हरामी", "कमीना", "बेवकूफ", "गधा",
     "chutiya", "madarchod", "bhadwa", "randi", "harami", "kamina",
 ]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataset-derived keyword filter helpers
+# Prevents political names / URLs / @mentions / hashtags entering Redis
+# ─────────────────────────────────────────────────────────────────────────────
+
+SKIP_PATTERNS = [
+    r'^https?://',   # URLs
+    r'^@',           # @mentions
+    r'^#',           # hashtags
+    r'^\d+$',        # pure numbers
+    r'^rt$',         # retweet marker
+    r'^\.$',         # lone dot
+]
+
+def is_valid_keyword(word: str) -> bool:
+    """Return True only for words worth adding to a toxic keyword set."""
+    if len(word) < 4:
+        return False
+    for pattern in SKIP_PATTERNS:
+        if re.match(pattern, word):
+            return False
+    return True
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Robust HTTP fetch with retry + browser-like headers
@@ -79,84 +106,118 @@ def fetch_wordlist(url: str, retries: int = 3, delay: float = 2.0) -> list[str]:
 # STAGE 1 — Keyword seeding into Redis
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def seed_keywords_redis(redis: Redis):
-    logger.info("Seeding Keyword Sets into Redis...")
+async def seed_smart_keywords(redis: Redis):
+    logger.info("Building TF-IDF smart keyword sets from dataset (English)...")
 
-    # ── English profanity ─────────────────────────────────────────────────────
-    # Source: LDNOOBW — raw GitHub file (not on HuggingFace, must use requests)
-    # https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words
-    logger.info("Downloading English LDNOOBW word list from GitHub...")
-    english_bad_words = fetch_wordlist(
-        "https://raw.githubusercontent.com/LDNOOBW/"
-        "List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/en"
+    # Load dataset
+    en_ds    = load_dataset("textdetox/multilingual_toxicity_dataset", split="en")
+    all_rows = list(en_ds)
+
+    texts  = [r["text"] for r in all_rows]
+    labels = [r["toxic"] for r in all_rows]  # 0 or 1
+
+    # Fit TF-IDF on unigrams only
+    tfidf = TfidfVectorizer(
+        analyzer="word",
+        ngram_range=(1, 1),
+        min_df=5,           # word must appear in at least 5 documents
+        max_df=0.85,        # ignore words in >85% of docs (too common)
+        sublinear_tf=True,
     )
-    if english_bad_words:
-        english_bad_words = [w.lower() for w in english_bad_words]
-        logger.info(f"Downloaded {len(english_bad_words)} English words from LDNOOBW.")
-    else:
-        logger.warning("LDNOOBW English download failed after retries. Using hardcoded fallback.")
-        english_bad_words = FALLBACK_EN_WORDS
+    X = tfidf.fit_transform(texts)
+    vocab = tfidf.get_feature_names_out()  # list of words in order
 
-    # ── Hindi profanity ───────────────────────────────────────────────────────
-    # Source: LDNOOBW Hindi list (same repo, /hi file)
-    logger.info("Downloading Hindi LDNOOBW word list from GitHub...")
-    hindi_bad_words = fetch_wordlist(
-        "https://raw.githubusercontent.com/LDNOOBW/"
-        "List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words/master/hi"
+    # Fit logistic regression to get per-word toxic signal score
+    clf = LogisticRegression(max_iter=1000, C=1.0)
+    clf.fit(X, labels)
+
+    # clf.coef_[0] is the weight per word — positive = toxic signal
+    coef = clf.coef_[0]
+
+    # Separate into hard (high signal) and soft (moderate signal)
+    hard_keywords = []
+    soft_keywords = []
+
+    for word, weight in zip(vocab, coef):
+        # The user specifically requested unigrams. 'word' will be strings
+        if len(word) < 3:
+            continue
+        if weight >= 2.5:        # strongly toxic — hard block
+            hard_keywords.append(word)
+        elif weight >= 1.0:      # moderately toxic — soft, send to LLM
+            soft_keywords.append(word)
+
+    logger.info(f"Hard keywords: {len(hard_keywords)}, Soft keywords: {len(soft_keywords)}")
+    logger.info(f"Sample hard: {hard_keywords[:10]}")
+    logger.info(f"Sample soft: {soft_keywords[:10]}")
+
+    # Seed into separate Redis sets
+    await redis.delete("keywords:en:hard", "keywords:en:soft")
+
+    if hard_keywords:
+        await redis.sadd("keywords:en:hard", *hard_keywords)
+    if soft_keywords:
+        await redis.sadd("keywords:en:soft", *soft_keywords)
+
+    logger.info("Smart keyword seeding (English) complete.")
+
+async def seed_smart_keywords_hindi(redis: Redis):
+    logger.info("Building TF-IDF smart keyword sets from dataset (Hindi/Hinglish)...")
+
+    hi_ds  = load_dataset("textdetox/multilingual_toxicity_dataset", split="hi")
+    hin_ds = load_dataset("textdetox/multilingual_toxicity_dataset", split="hin")
+    all_rows = list(hi_ds) + list(hin_ds)
+
+    texts  = [r["text"] for r in all_rows]
+    labels = [r["toxic"] for r in all_rows]
+
+    # Same TF-IDF + LogReg approach
+    # char_wb analyzer works better for Devanagari script and code-mixed
+    tfidf = TfidfVectorizer(
+        analyzer="char_wb",   # character n-grams for Hindi
+        ngram_range=(3, 5),
+        min_df=5,
+        max_df=0.85,
+        sublinear_tf=True,
     )
-    if hindi_bad_words:
-        logger.info(f"Downloaded {len(hindi_bad_words)} Hindi words from LDNOOBW.")
-    else:
-        logger.warning("LDNOOBW Hindi download failed after retries. Using hardcoded fallback.")
-        hindi_bad_words = FALLBACK_HI_WORDS
+    X = tfidf.fit_transform(texts)
+    vocab = tfidf.get_feature_names_out()
 
-    # ── Hindi-English code-mixed (Hinglish) toxicity ──────────────────────────
-    # Source: textdetox/multilingual_toxicity_dataset (HuggingFace, verified)
-    # https://huggingface.co/datasets/textdetox/multilingual_toxicity_dataset
-    #
-    # IMPORTANT: splits are named by language code, NOT "train"
-    # Available splits: en, ru, uk, de, es, am, zh, ar, hi, it, fr, he, hin, tt, ja
-    # "hi"  = Hindi in Devanagari script
-    # "hin" = Hindi in Roman/transliterated script (closest to Hinglish)
-    logger.info("Loading Hindi toxic texts from textdetox/multilingual_toxicity_dataset...")
-    hinglish_bad_words = []
-    try:
-        hi_ds  = load_dataset("textdetox/multilingual_toxicity_dataset", split="hi")
-        hin_ds = load_dataset("textdetox/multilingual_toxicity_dataset", split="hin")
+    clf = LogisticRegression(max_iter=1000, C=1.0)
+    clf.fit(X, labels)
+    coef = clf.coef_[0]
 
-        # Each row: { text: str, toxic: int (0 or 1) }
-        # No "lang" column — split name IS the language
-        hinglish_bad_words = [
-            row["text"].strip()
-            for row in list(hi_ds) + list(hin_ds)
-            if row.get("toxic") == 1
-            and isinstance(row.get("text"), str)
-            and row.get("text", "").strip()
-        ]
-        logger.info(f"Extracted {len(hinglish_bad_words)} Hindi/Hinglish toxic texts.")
-    except Exception as e:
-        logger.warning(f"Failed to load textdetox dataset: {e}. Falling back to empty set.")
+    hard_hi = []
+    soft_hi = []
+    hard_hien = []
+    soft_hien = []
 
-    # ── Write to Redis ─────────────────────────────────────────────────────────
-    await redis.delete("keywords:en")
-    await redis.delete("keywords:hi")
-    await redis.delete("keywords:hi-en")
+    for word, weight in zip(vocab, coef):
+        # We strip spaces as character n-grams might include them
+        word = word.strip()
+        if len(word) < 3:
+            continue
+            
+        # Split into Devanagari (hi) and Roman (hi-en) based on characters
+        is_roman = bool(re.search(r'[a-zA-Z]', word))
+        if weight >= 2.5:
+            if is_roman: hard_hien.append(word)
+            else: hard_hi.append(word)
+        elif weight >= 1.0:
+            if is_roman: soft_hien.append(word)
+            else: soft_hi.append(word)
 
-    if english_bad_words:
-        await redis.sadd("keywords:en", *english_bad_words)
-        logger.info(f"Seeded {len(english_bad_words)} words into keywords:en")
+    logger.info(f"Hard keywords hi: {len(hard_hi)}, hi-en: {len(hard_hien)}")
+    logger.info(f"Soft keywords hi: {len(soft_hi)}, hi-en: {len(soft_hien)}")
 
-    if hindi_bad_words:
-        await redis.sadd("keywords:hi", *hindi_bad_words)
-        logger.info(f"Seeded {len(hindi_bad_words)} words into keywords:hi")
+    await redis.delete("keywords:hi:hard", "keywords:hi:soft", "keywords:hi-en:hard", "keywords:hi-en:soft")
 
-    if hinglish_bad_words:
-        # Hinglish toxic texts go into both hi and hi-en sets
-        await redis.sadd("keywords:hi", *hinglish_bad_words)
-        await redis.sadd("keywords:hi-en", *hinglish_bad_words)
-        logger.info(f"Seeded {len(hinglish_bad_words)} Hinglish texts into keywords:hi and keywords:hi-en")
+    if hard_hi: await redis.sadd("keywords:hi:hard", *hard_hi)
+    if soft_hi: await redis.sadd("keywords:hi:soft", *soft_hi)
+    if hard_hien: await redis.sadd("keywords:hi-en:hard", *hard_hien)
+    if soft_hien: await redis.sadd("keywords:hi-en:soft", *soft_hien)
 
-    logger.info("Keyword seeding into Redis complete.")
+    logger.info("Smart keyword seeding (Hindi/Hinglish) complete.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,15 +229,53 @@ async def seed_faiss_topics(db: AsyncSession):
 
     profile_id = "default_test_profile"
 
-    # English labels — multilingual MiniLM bridges these to Hindi/Tamil/etc at inference
+    # ── Delete guard: remove stale embeddings before re-seeding ──────────────
+    await db.execute(
+        delete(BannedTopicEmbedding).where(
+            BannedTopicEmbedding.profile_id == profile_id
+        )
+    )
+    await db.flush()
+    logger.info(f"Cleared old FAISS embeddings for profile '{profile_id}'.")
+
+    # Expanded from 7 generic labels to 21 specific labels (3 per category).
+    # More specific labels = higher cosine similarity scores at inference.
+    # The multilingual MiniLM model bridges these English labels to Hindi/Tamil/etc.
     banned_topics = [
+        # ── Crypto / financial scams ─────────────────────────────────────────
         "cryptocurrency investment scam quick money high returns",
+        "Bitcoin Ethereum pump and dump scheme guaranteed profit",
+        "send money crypto wallet get rich quick guaranteed returns",
+
+        # ── Self-harm / suicide ──────────────────────────────────────────────
         "instructions on how to commit suicide or self harm",
-        "extreme racism hate speech targeting minorities",
+        "how many pills to take to overdose on medication",
+        "methods to end your life want to die need help",
+
+        # ── Hate speech / racism ─────────────────────────────────────────────
+        "racist slurs targeting Black African people hate speech",
+        "casteist slurs against Dalit lower caste communities India",
+        "communal hatred between Hindus and Muslims religious violence",
+
+        # ── Violence / threats ───────────────────────────────────────────────
         "violent threats to murder assault or physically harm someone",
+        "I will find you and kill you death threat",
+        "bomb explosion attack planning instructions violence",
+
+        # ── CSAM ────────────────────────────────────────────────────────────
         "child sexual abuse material illegal sexual content minors",
-        "phishing scams stealing personal banking credentials",
+        "sexual content involving underage children exploitation",
+        "grooming children for sexual purposes online predator",
+
+        # ── Phishing / fraud ─────────────────────────────────────────────────
+        "phishing scams stealing personal banking credentials passwords",
+        "OTP bank account password steal fraud impersonation",
+        "fake KYC Aadhaar PAN UPI verification fraud India",
+
+        # ── Drug dealing ─────────────────────────────────────────────────────
         "drug dealing illegal substance purchase and sale",
+        "buy weed cocaine heroin online home delivery",
+        "MDMA LSD ganja charas online order illegal drugs",
     ]
 
     # Must use the same model as inference (paraphrase-multilingual-MiniLM-L12-v2)
@@ -288,7 +387,8 @@ async def main():
             # Order matters: profile must exist before faiss topics (FK constraint)
             await seed_profile(db)
             await seed_faiss_topics(db)
-            await seed_keywords_redis(redis)
+            await seed_smart_keywords(redis)
+            await seed_smart_keywords_hindi(redis)
             logger.info("=== Seeding Complete ===")
         except Exception as e:
             logger.error(f"Seeding failed: {e}", exc_info=True)

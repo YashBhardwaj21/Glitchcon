@@ -33,8 +33,8 @@ class PromptBuilder:
         
         # 1. Try Redis
         cached = await redis.get(cache_key)
-        if cached:
-            return cached.decode("utf-8")
+        if cached is not None:
+            return cached
             
         # 2. Try DB for profile-specific
         stmt = select(PromptTemplate).where(
@@ -67,12 +67,14 @@ class PromptBuilder:
 
     @classmethod
     async def build(
-        cls, 
-        message: str, 
-        profile: RulesProfileResponse, 
+        cls,
+        message: str,
+        profile: RulesProfileResponse,
         lang_ctx: LanguageContext,
         db: AsyncSession,
-        redis: Redis
+        redis: Redis,
+        faiss_hint: tuple[str, float] | None = None,
+        keyword_hint: str | None = None,
     ) -> str:
         
         template_str = await cls.get_template_str(profile.profile_id, db, redis)
@@ -95,7 +97,25 @@ class PromptBuilder:
             extra_instruction = "\nThis is a code-mixed Hindi-English message. Evaluate the combined meaning."
         elif lang_ctx.is_transliterated:
             extra_instruction = f"\nNote: The user typed this message in Roman script, but it was detected as {cls._get_lang_name(lang_ctx.code)}."
-            
+
+        # Inject FAISS soft-block semantic hint when Stage 3 is uncertain
+        # This prompts the LLM to pay attention to the flagged topic area
+        if faiss_hint is not None:
+            topic, score = faiss_hint
+            extra_instruction += (
+                f"\n\nNOTE: Semantic analysis suggests this message may relate to "
+                f'"{topic}" (similarity score: {score:.2f}). '
+                f"Pay extra attention to whether this topic is being discussed, "
+                f"even if framed indirectly or in a cultural context."
+            )
+
+        # Inject Keyword soft-block hint
+        if keyword_hint is not None:
+            extra_instruction += (
+                f"\n\nNOTE: {keyword_hint} "
+                f"It may be context-dependent or a false positive. Evaluate its actual usage carefully."
+            )
+
         prompt = template.render(
             detected_language=cls._get_lang_name(lang_ctx.code),
             group_topic=profile.group_topic,
