@@ -52,3 +52,5 @@ logs/
 
 # Node (for any tooling scripts)
 node_modules/
+
+.aimod/

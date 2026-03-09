@@ -43,8 +43,19 @@ async def health_check(
         status_data["redis_reachable"] = True
     except Exception:
         pass
+    # Check LLM
+    try:
+        from app.llm.factory import get_provider
+        provider = get_provider()
+        status_data["llm_reachable"] = await provider.health_check()
+    except Exception:
+        pass
         
-    full_status_ok = status_data["db_reachable"] and status_data["redis_reachable"]
+    full_status_ok = (
+        status_data["db_reachable"] and 
+        status_data["redis_reachable"] and 
+        status_data["llm_reachable"]
+    )
     
     if not full_status_ok:
         raise HTTPException(
