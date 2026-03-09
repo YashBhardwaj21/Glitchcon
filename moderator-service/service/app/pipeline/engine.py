@@ -50,13 +50,25 @@ class ModerationEngine:
                 redis=redis
             )
 
+            # Map Stage 1 template keys to formal category strings
+            category_map = {
+                "pii":       "PII",
+                "spam":      "SPAM",
+                "profanity": "PROFANITY",
+                "keyword":   "HATE_SPEECH",
+            }
+            stage1_category = (
+                prefilter_result.category
+                or category_map.get(prefilter_result.template_key, "NONE")
+            )
+
             return ModerationResponse(
                 decision="BLOCK",
+                category=stage1_category,
                 detected_language=lang_ctx.code,
                 stage_triggered=prefilter_result.stage,
-                confidence=1.0, # Deterministic rule
+                confidence=1.0,  # Deterministic rule
                 violated_rule=prefilter_result.template_key or "keyword",
-                category=prefilter_result.category,
                 reason=f"Blocked by Stage 1: {prefilter_result.matched}",
                 feedback_message=feedback,
                 latency_ms=LatencyResult(
@@ -70,15 +82,15 @@ class ModerationEngine:
 
         # ── Stage 3 (FAISS) and Stage 2 (LLM) ─────────────────────────────────
         # These stages run sequentially because Stage 2 (LLM) REQUIRES the output
-        # of Stage 3 (faiss_hint) to inform its prompt. 
-        
+        # of Stage 3 (faiss_hint) to inform its prompt.
+
         s3_start = time.perf_counter()
-        
+
         # 1. Run FAISS (Semantic Search) first
         faiss_result = await FaissService.search(
-            lang_ctx.normalised_text, 
-            profile.profile_id, 
-            profile.faiss_threshold, 
+            lang_ctx.normalised_text,
+            profile.profile_id,
+            profile.faiss_threshold,
             db
         )
         latency_stage3 = int((time.perf_counter() - s3_start) * 1000)
@@ -89,26 +101,22 @@ class ModerationEngine:
             faiss_hint = (faiss_result.topic, faiss_result.score)
 
         # 3. Run LLM Analysis (only if FAISS didn't HARD BLOCK)
-        # If FAISS HARD BLOCKS, we can technically skip the LLM, but to keep the 
-        # pipeline simple and match existing tests, we'll run it or short-circuit here.
-        # For now, we run it sequentially as before but measure latency properly.
         s2_start = time.perf_counter()
-        
+
         llm_response = None
         if faiss_result.decision != "BLOCK":
             llm_response = await Stage2LLM.process(
-                request.message, 
-                profile, 
-                lang_ctx, 
-                _llm_provider, 
-                db, 
-                redis, 
-                faiss_hint=faiss_hint, 
+                request.message,
+                profile,
+                lang_ctx,
+                _llm_provider,
+                db,
+                redis,
+                faiss_hint=faiss_hint,
                 keyword_hint=prefilter_result.keyword_hint
             )
-            
-        latency_stage2 = int((time.perf_counter() - s2_start) * 1000)
 
+        latency_stage2 = int((time.perf_counter() - s2_start) * 1000)
         total_latency = int((time.perf_counter() - total_start) * 1000)
 
         # ── Decision Logic ────────────────────────────────────────────────────
@@ -119,6 +127,7 @@ class ModerationEngine:
 
         stage_triggered = None
         decision = "ALLOW"
+        category = "NONE"       # safe default — prevents Pydantic validation crash
         confidence = None
         violated_rule = None
         reason = None
@@ -129,7 +138,7 @@ class ModerationEngine:
             stage_triggered = "stage3_faiss"
             confidence = faiss_result.score
             violated_rule = "topic"
-            category = faiss_result.category
+            category = getattr(faiss_result, "category", "NONE") or "NONE"
             reason = f"Blocked by FAISS semantic override: {faiss_result.topic}"
             feedback = await FeedbackTemplateService.render(
                 "topic", lang_ctx.code, {"topic": faiss_result.topic}, db, redis
@@ -138,13 +147,13 @@ class ModerationEngine:
             # Use Stage 2 LLM decision (whether HINT was sent or not)
             if llm_response:
                 decision = llm_response.decision
-                category = llm_response.category
+                category = getattr(llm_response, "category", "NONE") or "NONE"
                 confidence = llm_response.confidence
                 violated_rule = llm_response.violated_rule
                 reason = llm_response.reason
                 feedback = llm_response.feedback_message
                 if decision == "BLOCK":
-                    stage_triggered = "llm" 
+                    stage_triggered = "llm"
                     if faiss_result.decision == "HINT":
                         stage_triggered += "+faiss_hint"
                     if prefilter_result.keyword_hint:

@@ -32,7 +32,7 @@ class LatencyResult(BaseModel):
 
 class ModerationResponse(BaseModel):
     decision: str
-    category: ViolationCategory
+    category: ViolationCategory = ViolationCategory.NONE  # default prevents crash when LLM unavailable
     detected_language: str
     stage_triggered: Optional[str] = None
     confidence: Optional[float] = None

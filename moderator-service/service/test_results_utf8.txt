@@ -1,0 +1,227 @@
+﻿==================================================================
+  MODERATION PIPELINE - CATEGORIZATION TEST SUITE
+  Endpoint : http://localhost:8001
+  Max Level: 5
+==================================================================
+
+-- LEVEL 1 - Clean messages (all should ALLOW / NONE) ----------
+
+âo. PASS  [L1] Basic greeting
+
+âo. PASS  [L1] Technical question EN
+
+âo. PASS  [L1] Technical question HI
+
+âo. PASS  [L1] Religious expression EN
+
+âo. PASS  [L1] Religious expression HI
+
+âo. PASS  [L1] Identity mention positive
+
+âo. PASS  [L1] Compliment
+
+âo. PASS  [L1] Sports fan
+
+âo. PASS  [L1] Neutral news
+
+âo. PASS  [L1] LGBTQ+ supportive
+
+âo. PASS  [L1] Sensitive topic neutral
+
+âo. PASS  [L1] Competitive game
+
+âo. PASS  [L1] Casual Hinglish
+
+âo. PASS  [L1] Hindi news
+
+-- LEVEL 2 - Obvious violations (Stage 1 should catch) ---------
+
+â?O FAIL  [L2] PII - Indian mobile
+         Expected : [BLOCK] [PII]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+â?O FAIL  [L2] PII - Aadhaar
+         Expected : [BLOCK] [PII]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+â?O FAIL  [L2] PII - PAN card
+         Expected : [BLOCK] [PII]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+â?O FAIL  [L2] PII - Email
+         Expected : [BLOCK] [PII]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+â?O FAIL  [L2] PII - UPI
+         Expected : [BLOCK] [PII]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+â?O FAIL  [L2] Profanity direct EN
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L2] Profanity leet speak
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L2] Hindi slur direct
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+dY'¥ ERROR  [L2] Hindi Devanagari slur
+         The remote server returned an error: (400) Bad Request.
+
+â?O FAIL  [L2] Racial slur direct
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L2] Crypto scam direct
+         Expected : [BLOCK] [SCAM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L2] Self harm direct
+         Expected : [BLOCK] [SELF_HARM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+-- LEVEL 3 - Indirect violations (LLM should catch) -----------
+
+â?O FAIL  [L3] Threat indirect
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Dehumanisation
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : keyword
+
+â?O FAIL  [L3] Gender discrimination
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Doxxing attempt
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Phishing OTP
+         Expected : [BLOCK] [PII]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Fake investment scheme
+         Expected : [BLOCK] [SCAM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Self harm indirect
+         Expected : [BLOCK] [SELF_HARM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Casteism India
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Communal hate India
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Hindi indirect threat
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Hinglish threat
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L3] Hinglish scam
+         Expected : [BLOCK] [SCAM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+-- LEVEL 4 - Bypass attempts (normaliser + LLM should catch) ---
+
+â?O FAIL  [L4] Leet speak hate
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Spaced out slur
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Dotted slur
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Repeated chars slur
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Mixed script bypass
+         Expected : [BLOCK] [PROFANITY]
+         Got      : [BLOCK] [NONE] stage:stage1 conf:1.0
+         Rule     : pii
+
+dY'¥ ERROR  [L4] Scam with emoji
+         The remote server returned an error: (400) Bad Request.
+
+â?O FAIL  [L4] Threat with asterisks
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Subtle self harm
+         Expected : [BLOCK] [SELF_HARM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Code mixed hate
+         Expected : [BLOCK] [HATE_SPEECH]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+â?O FAIL  [L4] Polite phrased threat
+         Expected : [BLOCK] [THREAT]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+-- LEVEL 5 - Edge cases and tricky scenarios -------------------
+
+âo. PASS  [L5] Fiction violence
+
+âo. PASS  [L5] News report violence
+
+âo. PASS  [L5] Academic hate speech
+
+âo. PASS  [L5] Quoting to report
+
+âo. PASS  [L5] Medical overdose context
+
+âo. PASS  [L5] Sarcastic compliment
+
+âo. PASS  [L5] Profanity in positive context
+
+âo. PASS  [L5] Minority mention neutral
+
+âo. PASS  [L5] Political criticism
+
+âo. PASS  [L5] Competitive trash talk
+
+âo. PASS  [L5] Spam flood 1
+
+âo. PASS  [L5] Spam flood 2
+
+âo. PASS  [L5] Spam flood 3
+
+âo. PASS  [L5] Spam flood 4
+
+âo. PASS  [L5] Spam flood 5
+
+â?O FAIL  [L5] Spam flood 6 - should block
+         Expected : [BLOCK] [SPAM]
+         Got      : [ALLOW] [NONE] stage: conf:0.0
+
+==================================================================
+  RESULTS
+  Total : 64
+  Pass  : 29 âo.
+  Fail  : 33 â?O
+  Error : 2 dY'¥
+  Score : 45.3%
+==================================================================
