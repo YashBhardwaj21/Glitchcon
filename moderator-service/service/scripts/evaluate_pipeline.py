@@ -25,8 +25,6 @@ async def run_evaluation():
     # 1. Load Dataset (Subset of TextDetox English)
     # Using parquet-based source, sampling from middle where toxic examples exist
     logger.info("Loading textdetox dataset from HuggingFace...")
-    # 1. Load Dataset — load full split, then filter for guaranteed balance
-    logger.info("Loading textdetox dataset from HuggingFace...")
     en_ds = load_dataset("textdetox/multilingual_toxicity_dataset", split="en")
     all_rows = list(en_ds)
     
@@ -78,7 +76,6 @@ async def run_evaluation():
                 y_true.append(true_label)
                 y_pred.append(response.decision)
                 
-                # respect Groq free tier 30 RPM limit
                 # respect Groq free tier 30 RPM limit
                 await asyncio.sleep(1.0)
                 

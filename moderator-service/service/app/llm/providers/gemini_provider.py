@@ -11,7 +11,7 @@ from app.core.logging import logger
 class GeminiProvider(BaseLLMProvider):
     def __init__(self):
         genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.model = genai.GenerativeModel('gemini-2.5-flash')
         self.generation_config = GenerationConfig(
             response_mime_type="application/json",
             temperature=0.1

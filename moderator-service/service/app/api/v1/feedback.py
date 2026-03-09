@@ -7,7 +7,7 @@ from app.db.session import get_db
 from app.db.models import FeedbackTemplate, APIKey
 from app.api.deps import verify_api_key
 from app.api.v1.health import get_redis
-from app.cache.feedback_cache import FeedbackCacheService
+from app.cache.feedback_cache import FeedbackTemplateService
 from app.schemas.feedback import FeedbackTemplateCreate, FeedbackTemplateUpdate, FeedbackTemplateResponse
 
 router = APIRouter()
@@ -51,7 +51,7 @@ async def get_feedback_template(
     """
     Returns the feedback template for a specific key and language.
     """
-    template = await FeedbackCacheService.get_template(template_key, language, db, redis)
+    template = await FeedbackTemplateService.get_template(template_key, language, db, redis)
     if not template:
         raise HTTPException(status_code=404, detail="Feedback template not found")
         
@@ -85,7 +85,7 @@ async def update_feedback_template(
     await db.refresh(db_template)
     
     # Invalidate cache
-    await FeedbackCacheService.invalidate(template_key, language, redis)
+    await FeedbackTemplateService.invalidate(template_key, language, redis)
     
     return FeedbackTemplateResponse.model_validate(db_template)
 
@@ -114,4 +114,4 @@ async def delete_feedback_template(
     await db.commit()
     
     # Invalidate cache
-    await FeedbackCacheService.invalidate(template_key, language, redis)
+    await FeedbackTemplateService.invalidate(template_key, language, redis)

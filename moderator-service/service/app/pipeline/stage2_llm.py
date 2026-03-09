@@ -1,6 +1,8 @@
 import time
 import asyncio
 from typing import Optional
+from difflib import SequenceMatcher
+
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,9 +57,24 @@ class Stage2LLM:
                 
             # 4. Rule Validation — prevents hallucinated rules from blocking
             if response.decision == "BLOCK" and response.violated_rule:
-                all_rules_text = " ".join(profile.global_rules + profile.group_rules).lower()
-                # Check if the violated_rule is a reasonably close match (substring)
-                if response.violated_rule.lower() not in all_rules_text:
+                violated_lower = response.violated_rule.lower()
+                all_rules = profile.global_rules + profile.group_rules
+                
+                valid = False
+                for rule in all_rules:
+                    rule_lower = rule.lower()
+                    # Fuzzy match — ratio > 0.4 means meaningful overlap
+                    if SequenceMatcher(None, violated_lower, rule_lower).ratio() > 0.4:
+                        valid = True
+                        break
+                    
+                    # Also check if any 4+ letter word from violated_rule appears in any actual rule
+                    violated_words = [w for w in violated_lower.replace("/", " ").replace("-", " ").split() if len(w) >= 4]
+                    if any(w in rule_lower for w in violated_words):
+                        valid = True
+                        break
+                
+                if not valid:
                     logger.warning(f"LLM hallucinated rule '{response.violated_rule}'. Overriding to ALLOW.")
                     response.decision = "ALLOW"
                     response.violated_rule = None
