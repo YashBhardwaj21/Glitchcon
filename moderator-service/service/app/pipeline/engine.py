@@ -13,9 +13,42 @@ from app.pipeline.stage3_faiss import FaissService
 from app.cache.feedback_cache import FeedbackTemplateService
 from app.llm.factory import get_provider
 
-# We will instantiate the provider lazily inside the engine to prevent
-# startup crashes if environment variables are missing.
 _llm_provider = None
+
+# ── Academic / Reporting Context Guard ───────────────────────────────────────
+# These phrases indicate the message is discussing a topic analytically,
+# not perpetuating it. Used to override FAISS false positives.
+# Not a content blocklist — a CONTEXT detector.
+_REPORTING_CONTEXT_PHRASES = [
+    "is a serious issue",
+    "we must discuss",
+    "we should discuss",
+    "research shows",
+    "study found",
+    "statistics show",
+    "awareness about",
+    "must talk about",
+    "should address",
+    "is a problem",
+    "should I report",
+    "how to report",
+    "reporting this",
+    "i want to report",
+    "what is",
+    "why does",
+    "how does",
+    "can someone explain",
+]
+
+def _is_reporting_context(text: str) -> bool:
+    """
+    Returns True if the message appears to be discussing/reporting a topic
+    rather than perpetuating it. Prevents FAISS false positives on academic
+    and news-style messages.
+    """
+    text_lower = text.lower()
+    return any(phrase in text_lower for phrase in _REPORTING_CONTEXT_PHRASES)
+
 
 class ModerationEngine:
     @staticmethod
@@ -36,7 +69,9 @@ class ModerationEngine:
 
         # Stage 1: Fast Pre-filter
         s1_start = time.perf_counter()
-        prefilter_result = await Stage1Prefilter.process(request.message, profile, lang_ctx, request.user_id, redis)
+        prefilter_result = await Stage1Prefilter.process(
+            request.message, profile, lang_ctx, request.user_id, redis
+        )
         latency_stage1 = int((time.perf_counter() - s1_start) * 1000)
 
         if prefilter_result.blocked:
@@ -50,12 +85,15 @@ class ModerationEngine:
                 redis=redis
             )
 
-            # Map Stage 1 template keys to formal category strings
+            # stage1_prefilter.py now sets category explicitly on every blocked return.
+            # The category_map here is a safety fallback only.
             category_map = {
-                "pii":       "PII",
-                "spam":      "SPAM",
-                "profanity": "PROFANITY",
-                "keyword":   "HATE_SPEECH",
+                "pii":        "PII",
+                "spam":       "SPAM",
+                "profanity":  "PROFANITY",
+                "hate_speech": "HATE_SPEECH",
+                "threat":     "THREAT",
+                "keyword":    "HATE_SPEECH",
             }
             stage1_category = (
                 prefilter_result.category
@@ -67,7 +105,7 @@ class ModerationEngine:
                 category=stage1_category,
                 detected_language=lang_ctx.code,
                 stage_triggered=prefilter_result.stage,
-                confidence=1.0,  # Deterministic rule
+                confidence=1.0,
                 violated_rule=prefilter_result.template_key or "keyword",
                 reason=f"Blocked by Stage 1: {prefilter_result.matched}",
                 feedback_message=feedback,
@@ -80,13 +118,9 @@ class ModerationEngine:
                 metadata=request.metadata
             )
 
-        # ── Stage 3 (FAISS) and Stage 2 (LLM) ─────────────────────────────────
-        # These stages run sequentially because Stage 2 (LLM) REQUIRES the output
-        # of Stage 3 (faiss_hint) to inform its prompt.
-
+        # ── Stage 3 (FAISS) ───────────────────────────────────────────────────
         s3_start = time.perf_counter()
 
-        # 1. Run FAISS (Semantic Search) first
         faiss_result = await FaissService.search(
             lang_ctx.normalised_text,
             profile.profile_id,
@@ -95,12 +129,21 @@ class ModerationEngine:
         )
         latency_stage3 = int((time.perf_counter() - s3_start) * 1000)
 
-        # 2. Extract FAISS hint if in the "SOFT" match threshold
+        # Academic/reporting context guard:
+        # If FAISS wants to hard block but the message is clearly discussing
+        # a topic analytically (e.g. "Sexual harassment is a serious issue"),
+        # downgrade the BLOCK to a HINT so LLM gets final say.
+        # This prevents false positives without raising the global threshold.
+        if faiss_result.decision == "BLOCK" and _is_reporting_context(request.message):
+            faiss_result.decision = "HINT"
+            faiss_result.score = faiss_result.score * 0.85  # dampen score for hint
+
+        # Extract FAISS hint if in the soft threshold range
         faiss_hint = None
         if faiss_result.decision == "HINT":
             faiss_hint = (faiss_result.topic, faiss_result.score)
 
-        # 3. Run LLM Analysis (only if FAISS didn't HARD BLOCK)
+        # ── Stage 2 (LLM) — only if FAISS didn't hard block ──────────────────
         s2_start = time.perf_counter()
 
         llm_response = None
@@ -120,14 +163,14 @@ class ModerationEngine:
         total_latency = int((time.perf_counter() - total_start) * 1000)
 
         # ── Decision Logic ────────────────────────────────────────────────────
-        # FAISS BLOCK (hard, score > 0.82) overrides LLM — deterministic.
-        # FAISS HINT (soft, 0.65–0.82)    → LLM already received the hint and
-        #                                    took it into account in its response.
-        # FAISS ALLOW (score < 0.65)       → LLM decision used as-is.
+        # FAISS BLOCK (hard)  → deterministic block, skip LLM
+        # FAISS HINT (soft)   → LLM received the hint, its decision is final
+        # FAISS ALLOW         → LLM decision used as-is
+        # LLM unavailable     → fail open to ALLOW with category=NONE (safe default)
 
         stage_triggered = None
         decision = "ALLOW"
-        category = "NONE"       # safe default — prevents Pydantic validation crash
+        category = "NONE"
         confidence = None
         violated_rule = None
         reason = None
@@ -144,7 +187,6 @@ class ModerationEngine:
                 "topic", lang_ctx.code, {"topic": faiss_result.topic}, db, redis
             )
         else:
-            # Use Stage 2 LLM decision (whether HINT was sent or not)
             if llm_response:
                 decision = llm_response.decision
                 category = getattr(llm_response, "category", "NONE") or "NONE"

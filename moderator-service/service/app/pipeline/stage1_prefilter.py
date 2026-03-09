@@ -29,8 +29,7 @@ def normalise_for_lookup(text: str) -> str:
     text = re.sub(r'(.)\1{2,}', r'\1', text)
     # Remove spaces sandwiched between single letters: "f u c k" → "fuck"
     text = re.sub(r'(?<![a-z])(?:[a-z]\s+)+[a-z](?![a-z])', lambda m: m.group(0).replace(' ', ''), text)
-    # FIX: strip dots/dashes/underscores/asterisks between any two letters
-    # Old regex only matched single-char sequences — missed "f.u.c.k.i.n.g"
+    # Strip dots/dashes/underscores/asterisks between any two letters: "f.u.c.k.i.n.g" → "fucking"
     text = re.sub(r'(?<=[a-z])[.\-_*](?=[a-z])', '', text)
     return text
 
@@ -47,31 +46,31 @@ PII_PATTERNS = {
     "card_number":  re.compile(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b"),
 }
 
-# FIX: Racial/identity slurs → HATE_SPEECH (not PROFANITY)
+# Racial/identity slurs → HATE_SPEECH category
 HARD_EN_HATE_SPEECH = {
-    "nigger", "nigga",    # racial — n1gg3r normalises here via leet map
-    "kike",               # antisemitic
-    "spic",               # hispanic slur
-    "chink", "gook",      # anti-asian
-    "faggot",             # homophobic
-    "bhangi",             # casteist slur India
+    "nigger", "nigga",
+    "kike",
+    "spic",
+    "chink", "gook",
+    "faggot",
+    "bhangi",
 }
 
-# Severe profanity — PROFANITY category
+# Severe profanity → PROFANITY category
 HARD_EN_PROFANITY = {
     "motherfucker", "motherfucking", "cunt",
     "fucking", "fuckyou", "fuckoff",
     "asshole", "bastard", "bitch", "dickhead",
 }
 
-# Hindi/Hinglish slurs — PROFANITY category
+# Hindi/Hinglish slurs → PROFANITY category
 HARD_HI_PROFANITY = {
     "madarchod", "bhenchod", "behenchod", "chutiya", "chutiye",
     "gaandu", "gandu", "randi", "bhosdike", "bhosdika",
     "lodu", "laude", "lavde",
 }
 
-# FIX: Hindi threat phrases — THREAT category
+# Hindi threat phrases → THREAT category
 # Checked BEFORE profanity so "maar do sala harami" → THREAT not PROFANITY
 HARD_HI_THREAT = {
     "maar do",
@@ -83,6 +82,17 @@ HARD_HI_THREAT = {
     "utha lo",
     "khoon kar",
     "sar kaato",
+}
+
+# When a Hindi threat phrase targets a GROUP rather than an individual,
+# it should be HATE_SPEECH not THREAT.
+# These are plural/group indicators in Hinglish: "these people", "them all", etc.
+GROUP_INDICATORS_HI = {
+    "saale", "saalo",   # plural derogatory
+    "inko", "unko",     # them (object)
+    "logo", "log",      # people
+    "sab ko", "sabko",  # everyone
+    "inhe", "unhe",     # them
 }
 
 
@@ -111,10 +121,15 @@ class ProfanityChecker:
         cls.load_lists()
         text_lower = text.lower()
         normalised = normalise_for_lookup(text_lower)
+        words_in_text = set(text_lower.split())
 
-        # 1. Hindi threat phrases first — takes priority over profanity in same message
+        # 1. Hindi threat phrases — checked first, takes priority
         for phrase in HARD_HI_THREAT:
             if phrase in text_lower:
+                # Disambiguate: threat against a GROUP → HATE_SPEECH
+                # "ye saale log maar do" targets a group, not an individual
+                if words_in_text & GROUP_INDICATORS_HI:
+                    return True, "hate_speech_group_threat"
                 return True, "threat_hi"
 
         # 2. English hate speech slurs
@@ -228,6 +243,23 @@ class SpamChecker:
         return results[2] > limit
 
 
+# Maps v_type strings returned by ProfanityChecker to (category, template_key)
+_VIOLATION_CATEGORY_MAP = {
+    "hate_speech_en":           ("HATE_SPEECH", "hate_speech"),
+    "hate_speech_group_threat": ("HATE_SPEECH", "hate_speech"),
+    "threat_hi":                ("THREAT",      "threat"),
+}
+
+def _resolve_violation_category(v_type: str) -> tuple[str, str]:
+    """
+    Maps a violation type string to (category, template_key).
+    Falls back to PROFANITY for all profanity_* types.
+    """
+    if v_type in _VIOLATION_CATEGORY_MAP:
+        return _VIOLATION_CATEGORY_MAP[v_type]
+    return ("PROFANITY", "profanity")
+
+
 class Stage1Prefilter:
     """
     Stage 1 — Fast Pre-filter (Multilingual)
@@ -269,20 +301,9 @@ class Stage1Prefilter:
             )
 
         # 3. Profanity / Hate Speech / Threat check
-        # FIX: v_type now distinguishes between hate_speech_en, threat_hi, profanity_*
-        # so we map to the correct category instead of always returning PROFANITY
         has_violation, v_type = ProfanityChecker.check(lang_ctx.normalised_text, lang_ctx)
         if has_violation:
-            if v_type == "hate_speech_en":
-                category = "HATE_SPEECH"
-                template_key = "hate_speech"
-            elif v_type == "threat_hi":
-                category = "THREAT"
-                template_key = "threat"
-            else:
-                category = "PROFANITY"
-                template_key = "profanity"
-
+            category, template_key = _resolve_violation_category(v_type)
             return PreFilterResult(
                 blocked=True,
                 stage="stage1",
