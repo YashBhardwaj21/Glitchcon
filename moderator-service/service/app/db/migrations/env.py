@@ -6,6 +6,11 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
+import sys
+import os
+# __file__ is app/db/migrations/env.py, so we need to go up 4 levels to reach service/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
 from app.core.config import settings
 from app.db.models import Base
 

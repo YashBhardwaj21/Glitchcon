@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 # Setup path so we can import from app
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.db.session import async_session_maker
+from app.db.session import AsyncSessionLocal
 from app.pipeline.engine import ModerationEngine
 from app.schemas.moderate import ModerationRequest
 from app.cache.profile_cache import ProfileCacheService
@@ -29,7 +29,7 @@ async def run_evaluation():
     redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
     profile_id = "default_test_profile"
     
-    async with async_session_maker() as db:
+    async with AsyncSessionLocal() as db:
         
         # Load profile
         profile = await ProfileCacheService.get_profile(profile_id, db, redis)

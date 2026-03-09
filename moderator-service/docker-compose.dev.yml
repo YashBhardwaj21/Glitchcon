@@ -41,7 +41,7 @@ services:
     restart: always
     command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
     env_file:
-      - .env
+      - ./service/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-moderator}:${POSTGRES_PASSWORD:-moderator_pass}@postgres:5432/${POSTGRES_DB:-moderator_db}
       - REDIS_URL=redis://redis:6379/0
@@ -51,7 +51,7 @@ services:
       - "8001:8001"
     volumes:
       - ./service/app:/app/app:ro
-      - ./data:/app/data
+      - ./service/data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +66,7 @@ services:
     restart: always
     command: celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
     env_file:
-      - .env
+      - ./service/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-moderator}:${POSTGRES_PASSWORD:-moderator_pass}@postgres:5432/${POSTGRES_DB:-moderator_db}
       - REDIS_URL=redis://redis:6379/0
@@ -89,7 +89,7 @@ services:
     restart: always
     command: celery -A app.tasks.celery_app flower --port=5555
     env_file:
-      - .env
+      - ./service/.env
     environment:
       - CELERY_BROKER_URL=redis://redis:6379/1
       - CELERY_RESULT_BACKEND=redis://redis:6379/2
