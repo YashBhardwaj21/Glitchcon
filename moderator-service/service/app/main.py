@@ -10,6 +10,7 @@ from app.api.v1 import health
 from app.api.v1 import admin
 from app.api.v1 import profiles
 from app.api.v1 import feedback
+from app.api.v1 import moderate
 
 # Initialize structured logging
 setup_logging()
@@ -54,3 +55,4 @@ app.include_router(health.router, prefix="/v1", tags=["system"])
 app.include_router(admin.router, prefix="/v1/admin", tags=["admin"])
 app.include_router(profiles.router, prefix="/v1/profiles", tags=["profiles"])
 app.include_router(feedback.router, prefix="/v1/feedback", tags=["feedback"])
+app.include_router(moderate.router, prefix="/v1/moderate", tags=["moderate"])
