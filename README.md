@@ -4,9 +4,9 @@
 
 # 🛡️ CommonsAI
 ### *AI-Powered Real-Time Contextual Chat Moderator*
-Deployed at: https://common-frontend-nine.vercel.app/
+Deployed at: https://common-i72m.vercel.app/
 
-Video url :https://youtu.be/zYeIgi4cEMs
+Demo Video : https://youtu.be/zYeIgi4cEMs
 > **"Guarding conversations. Empowering learning."**
 
 <br/>
