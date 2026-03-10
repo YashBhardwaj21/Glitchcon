@@ -2,6 +2,16 @@ const { moderateMessage } = require('../services/moderationService');
 const STATUS_CODES = require('../config/statusCodes');
 const supabase = require('../config/db');
 
+const EXTERNAL_MODERATION_URL = 'https://commonsmodel-1.onrender.com/query';
+
+function forwardToExternalAPI(payload) {
+  fetch(EXTERNAL_MODERATION_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((err) => console.error('External moderation API error:', err.message));
+}
+
 const moderateMessageContent = async (req, res, next) => {
   try {
     const isAudio = req.body.type === 'audio';
@@ -31,6 +41,14 @@ const moderateMessageContent = async (req, res, next) => {
       : (community?.description || 'General community discussion');
 
     const result = await moderateMessage(content, grammar);
+
+    // Fire-and-forget: forward LLM moderation output to external API
+    forwardToExternalAPI({
+      community_id: communityId,
+      message: content,
+      approved: result.approved,
+      reason: result.reason || null,
+    });
 
     if (!result.approved) {
       return res.status(422).json({

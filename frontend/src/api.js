@@ -1,4 +1,6 @@
-const BASE = `${import.meta.env.VITE_BACKEND_URL}/api`;
+const BASE = import.meta.env.VITE_BACKEND_URL
+  ? `${import.meta.env.VITE_BACKEND_URL}/api`
+  : `/api`;
 
 function headers(token, json = false) {
   const h = {};

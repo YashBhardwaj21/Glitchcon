@@ -21,6 +21,7 @@ export default function MessageItem({ message, onDelete }) {
     id,
     author,
     avatar,
+    avatarUrl,
     avatarColor,
     timestamp,
     content,
@@ -40,11 +41,19 @@ export default function MessageItem({ message, onDelete }) {
   if (isModerated) {
     return (
       <div className="flex gap-3 px-5 mb-4">
-        <div
-          className={`w-9 h-9 rounded-full ${avatarColor} flex-shrink-0 flex items-center justify-center text-white text-[11px] font-bold mt-1`}
-        >
-          {avatar}
-        </div>
+        {avatarUrl ? (
+          <img
+            src={avatarUrl}
+            alt={author}
+            className="w-9 h-9 rounded-full object-cover flex-shrink-0 mt-1"
+          />
+        ) : (
+          <div
+            className={`w-9 h-9 rounded-full ${avatarColor} flex-shrink-0 flex items-center justify-center text-white text-[11px] font-bold mt-1`}
+          >
+            {avatar}
+          </div>
+        )}
         <div className="flex-1 min-w-0">
           <span className="font-heading font-semibold text-[13px] text-text-primary">
             {author}
@@ -166,11 +175,19 @@ export default function MessageItem({ message, onDelete }) {
   return (
     <div className="flex gap-3 px-5 mb-4 group">
       {/* Avatar */}
-      <div
-        className={`w-9 h-9 rounded-full ${avatarColor} flex-shrink-0 flex items-center justify-center text-white text-[11px] font-bold mt-1`}
-      >
-        {avatar}
-      </div>
+      {avatarUrl ? (
+        <img
+          src={avatarUrl}
+          alt={author}
+          className="w-9 h-9 rounded-full object-cover flex-shrink-0 mt-1"
+        />
+      ) : (
+        <div
+          className={`w-9 h-9 rounded-full ${avatarColor} flex-shrink-0 flex items-center justify-center text-white text-[11px] font-bold mt-1`}
+        >
+          {avatar}
+        </div>
+      )}
 
       {/* Body */}
       <div className="flex-1 min-w-0">

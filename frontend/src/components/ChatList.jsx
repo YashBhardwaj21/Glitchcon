@@ -42,6 +42,7 @@ export default function ChatList({
   onSelect,
   onCreateCommunity,
   onJoinCommunity,
+  onlineMembers = [],
 }) {
   const [showModal, setShowModal] = useState(null); // 'create' | 'join' | null
   const [newName, setNewName] = useState("");
@@ -405,11 +406,11 @@ export default function ChatList({
                       </span>
                     </div>
                   )}
-                  {c.online_members != null && c.online_members > 0 && (
+                  {onlineMembers.length > 0 && (
                     <div className="flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-online" />
                       <span className="text-[10.5px] text-text-muted font-medium">
-                        {c.online_members} online
+                        {onlineMembers.length} online
                       </span>
                     </div>
                   )}

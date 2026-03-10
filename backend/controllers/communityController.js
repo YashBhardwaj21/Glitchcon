@@ -2,6 +2,7 @@ const supabase = require('../config/db');
 const { generateCommunityGrammar } = require('../services/promptGenerator');
 const path = require('path');
 const { uploadToSupabase, BUCKET_COMMUNITIES, BUCKET_AUDIO } = require('./uploadController');
+const { getOnlineMembers } = require('../Sockets/chatSocket');
 
 // POST /api/communities
 const createCommunity = async (req, res) => {
@@ -135,19 +136,11 @@ const getAllCommunities = async (req, res) => {
       }
     }
 
-    // 4. Get online users per community via Socket.io rooms
-    const io = req.app.get('io');
+    // 4. Get online users per community via presence map
     const onlinePerCommunity = {};
     for (const communityId of communityIds) {
-      const room = io?.sockets?.adapter?.rooms?.get(communityId);
-      const onlineUserIds = new Set();
-      if (room) {
-        for (const socketId of room) {
-          const socket = io.sockets.sockets.get(socketId);
-          if (socket?.user?.id) onlineUserIds.add(socket.user.id);
-        }
-      }
-      onlinePerCommunity[communityId] = onlineUserIds.size;
+      const online = getOnlineMembers(communityId);
+      onlinePerCommunity[communityId] = online.length;
     }
 
     // 5. Build enriched community list
@@ -210,9 +203,25 @@ const getUserCommunities = async (req, res) => {
       return res.status(500).json({ message: 'Failed to fetch your communities' });
     }
 
-    // Attach the user's role to each community
+    // Fetch member counts for each community
+    const { data: allRoles } = await supabase
+      .from('community_roles')
+      .select('community_id, user_id')
+      .in('community_id', communityIds);
+
+    const memberCounts = {};
+    for (const r of (allRoles || [])) {
+      memberCounts[r.community_id] = (memberCounts[r.community_id] || 0) + 1;
+    }
+
+    // Attach the user's role, total_members, and online_members to each community
     const roleMap = Object.fromEntries(roles.map((r) => [r.community_id, r.role]));
-    const result = communities.map((c) => ({ ...c, role: roleMap[c.id] }));
+    const result = communities.map((c) => ({
+      ...c,
+      role: roleMap[c.id],
+      total_members: memberCounts[c.id] || 0,
+      online_members: getOnlineMembers(c.id).length,
+    }));
 
     return res.status(200).json(result);
   } catch (error) {
@@ -290,7 +299,7 @@ const getCommunityMessages = async (req, res) => {
     // Batch-fetch sender profiles
     const senderIds = [...new Set(messages.map((m) => m.sender_id))];
     const { data: users } = senderIds.length
-      ? await supabase.from('users').select('id, name').in('id', senderIds)
+      ? await supabase.from('users').select('id, name, avatar_url').in('id', senderIds)
       : { data: [] };
     const usersMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
 
@@ -363,7 +372,7 @@ const sendMessage = async (req, res) => {
 
     const { data: sender } = await supabase
       .from('users')
-      .select('id, name')
+      .select('id, name, avatar_url')
       .eq('id', req.user.id)
       .single();
 
@@ -621,16 +630,8 @@ const getCommunityDetails = async (req, res) => {
       };
     });
 
-    // 5. Count online members via Socket.io room
-    const io = req.app.get('io');
-    const room = io?.sockets?.adapter?.rooms?.get(communityId);
-    const onlineUserIds = new Set();
-    if (room) {
-      for (const socketId of room) {
-        const socket = io.sockets.sockets.get(socketId);
-        if (socket?.user?.id) onlineUserIds.add(socket.user.id);
-      }
-    }
+    // 5. Count online members via presence map
+    const onlineMembers = getOnlineMembers(communityId);
 
     return res.status(200).json({
       id: community.id,
@@ -640,7 +641,8 @@ const getCommunityDetails = async (req, res) => {
       avatar_url: community.avatar_url || null,
       created_at: community.created_at,
       total_members: members.length,
-      online_members: onlineUserIds.size,
+      online_members: onlineMembers.length,
+      online_member_list: onlineMembers,
       members,
     });
   } catch (error) {

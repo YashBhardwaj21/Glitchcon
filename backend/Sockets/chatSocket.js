@@ -1,6 +1,46 @@
 const supabase = require('../config/db');
 const { moderateMessage } = require('../services/moderationService');
 
+const EXTERNAL_MODERATION_URL = 'https://commonsmodel-1.onrender.com/query';
+
+function forwardToExternalAPI(payload) {
+  fetch(EXTERNAL_MODERATION_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch((err) => console.error('External moderation API error:', err.message));
+}
+
+// In-memory presence store: communityId -> Map<socketId, { userId, name }>
+// Using socketId as key so one user with multiple tabs is tracked per-socket
+const presence = new Map();
+
+function getOnlineMembers(communityId) {
+  const room = presence.get(communityId);
+  if (!room) return [];
+  // Deduplicate by userId (multiple tabs => one entry per user)
+  const seen = new Map();
+  for (const { userId, name } of room.values()) {
+    if (!seen.has(userId)) seen.set(userId, { userId, name });
+  }
+  return Array.from(seen.values());
+}
+
+function broadcastPresence(io, communityId, joiningSocket = null) {
+  const members = getOnlineMembers(communityId);
+  const payload = {
+    communityId,
+    online_members: members.length,
+    members,
+  };
+  // Broadcast to everyone in the room
+  io.to(communityId).emit('presence_update', payload);
+  // Also send directly to the socket that just joined (in case it missed the room broadcast)
+  if (joiningSocket) {
+    joiningSocket.emit('presence_update', payload);
+  }
+}
+
 const initChatSocket = (io) => {
   // --- JWT authentication middleware for every socket connection ---
   io.use(async (socket, next) => {
@@ -29,12 +69,72 @@ const initChatSocket = (io) => {
   io.on('connection', (socket) => {
     console.log(`Socket connected: ${socket.id} (user: ${socket.user.id})`);
 
+    // --- leave_room ---
+    // Payload: { communityId }
+    socket.on('leave_room', ({ communityId } = {}) => {
+      if (!communityId) return;
+      socket.leave(communityId);
+
+      // Remove from presence map
+      const room = presence.get(communityId);
+      if (room) {
+        room.delete(socket.id);
+        if (room.size === 0) presence.delete(communityId);
+        else broadcastPresence(io, communityId);
+      }
+
+      if (socket.rooms_joined) socket.rooms_joined.delete(communityId);
+      console.log(`User ${socket.user.id} left room ${communityId}`);
+    });
+
     // --- join_room ---
     // Payload: { communityId }
-    socket.on('join_room', ({ communityId } = {}) => {
+    socket.on('join_room', async ({ communityId } = {}) => {
       if (!communityId) return;
+
+      // Skip if this socket already joined this room
+      if (socket.rooms_joined && socket.rooms_joined.has(communityId)) return;
+
       socket.join(communityId);
       console.log(`User ${socket.user.id} joined room ${communityId}`);
+
+      // Track in presence map
+      if (!presence.has(communityId)) presence.set(communityId, new Map());
+
+      // Immediately register with whatever name we have from the JWT
+      // so broadcastPresence fires without waiting for DB
+      const immeditateName = socket.user.user_metadata?.name || null;
+      presence.get(communityId).set(socket.id, {
+        userId: socket.user.id,
+        name: immeditateName,
+      });
+
+      // Store which rooms this socket is in so we can clean up on disconnect
+      if (!socket.rooms_joined) socket.rooms_joined = new Set();
+      socket.rooms_joined.add(communityId);
+
+      // Broadcast immediately — clients get updated count right away
+      broadcastPresence(io, communityId, socket);
+
+      // Then fetch the correct display name from DB and re-broadcast if different
+      try {
+        const { data: profile } = await supabase
+          .from('users')
+          .select('name')
+          .eq('id', socket.user.id)
+          .single();
+
+        const dbName = profile?.name || immeditateName;
+        if (dbName !== immeditateName) {
+          presence.get(communityId)?.set(socket.id, {
+            userId: socket.user.id,
+            name: dbName,
+          });
+          broadcastPresence(io, communityId);
+        }
+      } catch (_) {
+        // Non-critical — name already broadcast with JWT value
+      }
     });
 
     // --- send_message ---
@@ -64,6 +164,14 @@ const initChatSocket = (io) => {
           moderationResult = { approved: true };
         }
 
+        // Fire-and-forget: forward LLM moderation output to external API
+        forwardToExternalAPI({
+          community_id: communityId,
+          message: trimmedContent,
+          approved: moderationResult.approved,
+          reason: moderationResult.reason || null,
+        });
+
         if (!moderationResult.approved) {
           socket.emit('moderation_alert', {
             blocked: true,
@@ -92,7 +200,7 @@ const initChatSocket = (io) => {
         // 4. Fetch sender details and broadcast
         const { data: sender } = await supabase
           .from('users')
-          .select('id, name')
+          .select('id, name, avatar_url')
           .eq('id', socket.user.id)
           .single();
 
@@ -105,8 +213,21 @@ const initChatSocket = (io) => {
 
     socket.on('disconnect', () => {
       console.log(`Socket disconnected: ${socket.id}`);
+
+      // Remove from all rooms this socket had joined and broadcast updated presence
+      if (socket.rooms_joined) {
+        for (const communityId of socket.rooms_joined) {
+          const room = presence.get(communityId);
+          if (room) {
+            room.delete(socket.id);
+            if (room.size === 0) presence.delete(communityId);
+            else broadcastPresence(io, communityId);
+          }
+        }
+      }
     });
   });
 };
 
 module.exports = initChatSocket;
+module.exports.getOnlineMembers = getOnlineMembers;

@@ -17,7 +17,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-rose-400 to-pink-500",
     preview: "Don't forget dinner on Sunday!",
     time: "11:02",
-    unread: 1,
     pinned: true,
     active: true,
   },
@@ -28,7 +27,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-indigo-400 to-violet-500",
     preview: "Nolan: Check this out guys ✌️",
     time: "10:25",
-    unread: 0,
     pinned: true,
     active: false,
   },
@@ -39,7 +37,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-sky-400 to-blue-500",
     preview: "Movie tonight? 🎬",
     time: "10:10",
-    unread: 2,
     pinned: false,
     active: false,
   },
@@ -50,7 +47,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-emerald-400 to-teal-500",
     preview: "Build passed ✅ deploying now",
     time: "09:12",
-    unread: 0,
     pinned: true,
     active: false,
   },
@@ -61,7 +57,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-amber-400 to-orange-500",
     preview: "Happy birthday!! 🎂🎉",
     time: "Yesterday",
-    unread: 0,
     pinned: false,
     active: false,
   },
@@ -72,7 +67,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-rose-400 to-pink-500",
     preview: "Let me know about the deadline...",
     time: "Yesterday",
-    unread: 3,
     pinned: false,
     active: false,
   },
@@ -83,7 +77,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-lime-400 to-green-500",
     preview: "Leg day tomorrow, no excuses",
     time: "Yesterday",
-    unread: 0,
     pinned: false,
     active: false,
   },
@@ -94,7 +87,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-amber-400 to-orange-500",
     preview: "Can you review the PR?",
     time: "Mon",
-    unread: 0,
     pinned: false,
     active: false,
   },
@@ -105,7 +97,6 @@ const chats = [
     avatarColor: "bg-gradient-to-br from-gray-400 to-slate-500",
     preview: "Maintenance scheduled for Tuesday",
     time: "Mon",
-    unread: 0,
     pinned: false,
     active: false,
   },
@@ -214,9 +205,7 @@ export default function AllChatsView() {
                         />
                       )}
                       {chat.unread > 0 && (
-                        <span className="min-w-[20px] h-[20px] rounded-full bg-badge text-white text-[10px] font-bold flex items-center justify-center px-1.5">
-                          {chat.unread}
-                        </span>
+                        <span className="w-2 h-2 rounded-full bg-badge flex-shrink-0" />
                       )}
                     </div>
                   </div>

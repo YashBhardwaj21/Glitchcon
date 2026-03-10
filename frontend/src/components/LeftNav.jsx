@@ -14,12 +14,11 @@ const navItems = [
     icon: MessageCircle,
     label: "Direct Message",
     view: "direct_message",
-    badge: 12,
   },
-  { icon: Compass, label: "Discover", view: "discover", badge: 5 },
-  { icon: Building2, label: "Communities", view: "communities", badge: 3 },
-  { icon: Users, label: "Friends", view: "friends", badge: null },
-  { icon: Archive, label: "Archive", view: "archive", badge: null },
+  { icon: Compass, label: "Discover", view: "discover" },
+  { icon: Building2, label: "Communities", view: "communities" },
+  { icon: Users, label: "Friends", view: "friends" },
+  { icon: Archive, label: "Archive", view: "archive" },
 ];
 
 const bottomActions = [
@@ -45,7 +44,7 @@ export default function LeftNav({ activeView, onViewChange, onLogout }) {
       </div>
       {/* Nav Icons */}
       <div className="flex flex-col items-center gap-1 flex-1">
-        {navItems.map(({ icon: Icon, label, view, badge }) => {
+        {navItems.map(({ icon: Icon, label, view }) => {
           const isActive = activeView === view;
           return (
             <button
@@ -59,11 +58,6 @@ export default function LeftNav({ activeView, onViewChange, onLogout }) {
               }`}
             >
               <Icon size={20} strokeWidth={isActive ? 2 : 1.6} />
-              {badge && (
-                <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] rounded-full bg-badge text-white text-[10px] font-bold flex items-center justify-center px-1 shadow-sm">
-                  {badge}
-                </span>
-              )}
             </button>
           );
         })}

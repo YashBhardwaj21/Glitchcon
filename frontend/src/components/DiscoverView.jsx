@@ -34,6 +34,7 @@ export default function DiscoverView({
   const [activeTopic, setActiveTopic] = useState("All");
   const [joiningId, setJoiningId] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [joinError, setJoinError] = useState(null);
 
   /* Fetch all communities for discovery */
   useEffect(() => {
@@ -52,6 +53,7 @@ export default function DiscoverView({
     e.stopPropagation();
     if (joiningId) return;
     setJoiningId(communityId);
+    setJoinError(null);
     try {
       await onJoinCommunity?.(communityId);
       setCommunities((prev) =>
@@ -59,8 +61,21 @@ export default function DiscoverView({
           (c.id ?? c._id) === communityId ? { ...c, joined: true } : c,
         ),
       );
-    } catch {
-      /* silent */
+    } catch (err) {
+      console.error("[DiscoverView] Join error:", err);
+      if (err?.status === 409) {
+        // Already a member - refresh the communities list to re-filter
+        getCommunities(token)
+          .then((data) => {
+            const list = Array.isArray(data) ? data : (data.communities ?? []);
+            setCommunities(list);
+          })
+          .catch(() => {});
+        setJoinError("You are already a member of this community");
+      } else {
+        setJoinError(err?.message || "Failed to join community");
+      }
+      setTimeout(() => setJoinError(null), 5000);
     } finally {
       setJoiningId(null);
     }
@@ -138,6 +153,13 @@ export default function DiscoverView({
           ))}
         </div>
       </div>
+
+      {/* Error Banner */}
+      {joinError && (
+        <div className="px-6 py-3 bg-danger/10 border-b border-danger/20">
+          <p className="text-[13px] text-danger font-medium">{joinError}</p>
+        </div>
+      )}
 
       {/* Community Grid */}
       <div className="flex-1 overflow-y-auto p-5">

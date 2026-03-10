@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
 import {
-  getCommunities,
   getCommunity,
   getMyCommunities,
   createCommunity,
@@ -14,6 +13,7 @@ import {
   addAdmin,
   removeAdmin,
 } from "./api";
+import { getSocket } from "./socket";
 import "./App.css";
 import LeftNav from "./components/LeftNav";
 import ChatList from "./components/ChatList";
@@ -30,6 +30,9 @@ function Dashboard() {
   const [activeView, setActiveView] = useState("communities");
   const [communities, setCommunities] = useState([]);
   const [activeCommunity, setActiveCommunity] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [onlineUserIds, setOnlineUserIds] = useState(new Set());
+  const [onlineCount, setOnlineCount] = useState(0);
   const { token, logout } = useAuth();
 
   /* Fetch user's joined communities on mount */
@@ -40,7 +43,9 @@ function Dashboard() {
         const list = Array.isArray(data) ? data : (data.communities ?? []);
         console.log("[communities/me]", JSON.stringify(list[0], null, 2));
         setCommunities(list);
-        if (list.length > 0 && !activeCommunity) setActiveCommunity(list[0]);
+        setActiveCommunity(
+          (prev) => prev || (list.length > 0 ? list[0] : null),
+        );
       })
       .catch(() => {});
   }, [token]);
@@ -74,6 +79,34 @@ function Dashboard() {
     };
   }, [activeCommunity?.id, activeCommunity?._id, token]);
 
+  /* Re-fetch community data when online count changes (someone joined/left).
+     This updates activeCommunity.members so the sidebar member list stays in sync. */
+  const prevOnlineCountRef = useRef(onlineCount);
+  useEffect(() => {
+    // Skip if the count hasn't actually changed (initial render or same value)
+    if (prevOnlineCountRef.current === onlineCount) return;
+    prevOnlineCountRef.current = onlineCount;
+
+    const cId = activeCommunity?.id ?? activeCommunity?._id;
+    if (!cId || !token) return;
+
+    console.log("[Dashboard] Online count changed to", onlineCount, "→ re-fetching community", cId);
+    getCommunity(token, cId)
+      .then((full) => {
+        setCommunities((prev) =>
+          prev.map((c) =>
+            (c.id ?? c._id) === cId ? { ...c, ...full } : c,
+          ),
+        );
+        setActiveCommunity((prev) => {
+          const prevId = prev?.id ?? prev?._id;
+          if (prevId !== cId) return prev;
+          return { ...prev, ...full };
+        });
+      })
+      .catch(() => {});
+  }, [onlineCount, activeCommunity?.id, activeCommunity?._id, token]);
+
   const sidebarViews = ["communities", "friends", "archive", "discover"];
   const showSidebar = sidebarViews.includes(activeView);
 
@@ -90,6 +123,12 @@ function Dashboard() {
             onSelectCommunity={setDiscoverCommunity}
             onJoinCommunity={async (communityId) => {
               await joinCommunity(token, communityId);
+              // Notify backend via socket so it broadcasts presence_update to all members
+              const s = getSocket();
+              if (s?.connected) {
+                s.emit("join_room", { communityId });
+                console.log("[Discover] Emitted join_room for:", communityId);
+              }
               const data = await getMyCommunities(token);
               const list = Array.isArray(data)
                 ? data
@@ -131,6 +170,12 @@ function Dashboard() {
               }}
               onJoinCommunity={async (communityId) => {
                 await joinCommunity(token, communityId);
+                // Notify backend via socket so it broadcasts presence_update to all members
+                const s = getSocket();
+                if (s?.connected) {
+                  s.emit("join_room", { communityId });
+                  console.log("[ChatList] Emitted join_room for:", communityId);
+                }
                 const data = await getMyCommunities(token);
                 const list = Array.isArray(data)
                   ? data
@@ -144,6 +189,11 @@ function Dashboard() {
             />
             <ChatArea
               community={activeCommunity}
+              messages={messages}
+              onMessagesChange={setMessages}
+              onOnlineUserIdsChange={setOnlineUserIds}
+              onOnlineCountChange={setOnlineCount}
+              onlineCount={onlineCount}
               onEditCommunity={async (communityId, updates) => {
                 const updated = await updateCommunity(
                   token,
@@ -172,6 +222,13 @@ function Dashboard() {
                 );
               }}
               onLeaveCommunity={async (communityId) => {
+                // Notify backend via socket BEFORE removing from state
+                // so it broadcasts presence_update to remaining members
+                const s = getSocket();
+                if (s?.connected) {
+                  s.emit("leave_room", { communityId });
+                  console.log("[Dashboard] Emitted leave_room for:", communityId);
+                }
                 await leaveCommunity(token, communityId);
                 setCommunities((prev) =>
                   prev.filter((c) => (c.id ?? c._id) !== communityId),
@@ -197,41 +254,54 @@ function Dashboard() {
         onLogout={logout}
       />
       {renderContent()}
-      {showSidebar && (
-        <RightSidebar
-          mode={activeView}
-          discoverCommunity={discoverCommunity}
-          activeCommunity={activeCommunity}
-          onMakeAdmin={async (communityId, userId) => {
-            await addAdmin(token, communityId, userId);
-            const full = await getCommunity(token, communityId);
-            setCommunities((prev) =>
-              prev.map((c) =>
-                (c.id ?? c._id) === communityId ? { ...c, ...full } : c,
-              ),
-            );
-            setActiveCommunity((prev) => {
-              const prevId = prev?.id ?? prev?._id;
-              if (prevId !== communityId) return prev;
-              return { ...prev, ...full };
-            });
-          }}
-          onRemoveAdmin={async (communityId, userId) => {
-            await removeAdmin(token, communityId, userId);
-            const full = await getCommunity(token, communityId);
-            setCommunities((prev) =>
-              prev.map((c) =>
-                (c.id ?? c._id) === communityId ? { ...c, ...full } : c,
-              ),
-            );
-            setActiveCommunity((prev) => {
-              const prevId = prev?.id ?? prev?._id;
-              if (prevId !== communityId) return prev;
-              return { ...prev, ...full };
-            });
-          }}
-        />
-      )}
+      {showSidebar &&
+        (() => {
+          const textMessagesCount = messages.filter(
+            (m) => !m.type || m.type !== "audio",
+          ).length;
+          const audioMessagesCount = messages.filter(
+            (m) => m.type === "audio",
+          ).length;
+          return (
+            <RightSidebar
+              mode={activeView}
+              discoverCommunity={discoverCommunity}
+              activeCommunity={activeCommunity}
+              textMessagesCount={textMessagesCount}
+              audioMessagesCount={audioMessagesCount}
+              onlineUserIds={onlineUserIds}
+              onlineCount={onlineCount}
+              onMakeAdmin={async (communityId, userId) => {
+                await addAdmin(token, communityId, userId);
+                const full = await getCommunity(token, communityId);
+                setCommunities((prev) =>
+                  prev.map((c) =>
+                    (c.id ?? c._id) === communityId ? { ...c, ...full } : c,
+                  ),
+                );
+                setActiveCommunity((prev) => {
+                  const prevId = prev?.id ?? prev?._id;
+                  if (prevId !== communityId) return prev;
+                  return { ...prev, ...full };
+                });
+              }}
+              onRemoveAdmin={async (communityId, userId) => {
+                await removeAdmin(token, communityId, userId);
+                const full = await getCommunity(token, communityId);
+                setCommunities((prev) =>
+                  prev.map((c) =>
+                    (c.id ?? c._id) === communityId ? { ...c, ...full } : c,
+                  ),
+                );
+                setActiveCommunity((prev) => {
+                  const prevId = prev?.id ?? prev?._id;
+                  if (prevId !== communityId) return prev;
+                  return { ...prev, ...full };
+                });
+              }}
+            />
+          );
+        })()}
     </div>
   );
 }

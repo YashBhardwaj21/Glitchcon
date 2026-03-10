@@ -14,6 +14,8 @@ import {
   ShieldAlert,
   Info,
   Square,
+  Play,
+  Pause,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { getMessages, sendMessage as apiSend, sendAudioMessage } from "../api";
@@ -23,13 +25,17 @@ import MessageItem from "./MessageItem";
 
 export default function ChatArea({
   community,
+  messages = [],
+  onlineCount = 0,
+  onMessagesChange,
+  onOnlineUserIdsChange,
+  onOnlineCountChange,
   onEditCommunity,
   onDeleteCommunity,
   onLeaveCommunity,
   onDeleteMessage,
 }) {
   const { token, user } = useAuth();
-  const [messages, setMessages] = useState([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -44,14 +50,26 @@ export default function ChatArea({
   const [blockedReason, setBlockedReason] = useState(null);
   const {
     isRecording,
+    isPaused,
     isTranscribing,
+    recordingDuration,
     startRecording,
     stopRecording,
+    pauseRecording,
+    resumeRecording,
+    cancelRecording,
     transcribeAudio,
     audioChunksRef,
   } = useVoiceRecorder();
   const menuRef = useRef(null);
   const bottomRef = useRef(null);
+
+  // Keep latest onMessagesChange in a ref so socket handlers never capture stale closures.
+  // onOnlineCountChange and onOnlineUserIdsChange are React state setters (stable refs).
+  const onMessagesChangeRef = useRef(onMessagesChange);
+  useEffect(() => {
+    onMessagesChangeRef.current = onMessagesChange;
+  });
 
   /* Close menu on outside click */
   useEffect(() => {
@@ -66,33 +84,88 @@ export default function ChatArea({
   /* Fetch messages + WebSocket lifecycle (mirrors Chat.jsx pattern) */
   useEffect(() => {
     if (!community?.id || !token) {
-      setMessages([]);
+      onMessagesChange?.([]);
+      onOnlineUserIdsChange?.(new Set());
+      onOnlineCountChange?.(0);
       return;
     }
     const communityId = community.id;
 
-    setMessages([]);
+    onMessagesChange?.([]);
     setLoadingMessages(true);
     getMessages(token, communityId)
       .then((data) => {
         const list = Array.isArray(data) ? data : (data.messages ?? []);
-        setMessages(list);
+        onMessagesChange?.(list);
       })
-      .catch(() => setMessages([]))
+      .catch(() => onMessagesChange?.([]))
       .finally(() => setLoadingMessages(false));
 
+    // Seed initial online state from community data
+    if (
+      community.online_member_list &&
+      Array.isArray(community.online_member_list)
+    ) {
+      const onlineIds = new Set(
+        community.online_member_list.map((m) => m.userId || m.id),
+      );
+      onOnlineUserIdsChange?.(onlineIds);
+    }
+    if (community.online_members != null) {
+      onOnlineCountChange?.(community.online_members);
+    }
+
     const s = connectSocket(token);
-    s.on("connect", () => {
-      s.emit("join_room", { communityId });
-    });
+
+    // Register listeners FIRST so we don't miss the immediate presence_update.
+    // Use onMessagesChangeRef for the message callback (may be unstable).
+    // onOnlineCountChange / onOnlineUserIdsChange are stable React setters.
     s.on("receive_message", (msg) => {
-      setMessages((prev) => [...prev, msg]);
+      onMessagesChangeRef.current?.((prev) => [...prev, msg]);
     });
     s.on("message_deleted", ({ messageId }) => {
-      setMessages((prev) => prev.filter((m) => (m.id ?? m._id) !== messageId));
+      onMessagesChangeRef.current?.((prev) =>
+        prev.filter((m) => (m.id ?? m._id) !== messageId),
+      );
+    });
+    s.on("presence_update", (data) => {
+      // Only apply updates for the current community
+      if (data.communityId && data.communityId !== communityId) return;
+
+      console.log("[ChatArea] Received presence_update:", {
+        communityId,
+        online_members: data.online_members,
+        members: data.members,
+      });
+      onOnlineCountChange?.(data.online_members ?? 0);
+      if (Array.isArray(data.members)) {
+        const onlineIds = new Set(data.members.map((m) => m.userId || m.id));
+        onOnlineUserIdsChange?.(onlineIds);
+      }
     });
 
-    return () => s.disconnect();
+    // Now emit join_room — listeners are already attached
+    const emitJoinRoom = () => {
+      s.emit("join_room", { communityId });
+      console.log("[ChatArea] Emitted join_room for:", communityId);
+    };
+
+    if (s.connected) {
+      emitJoinRoom();
+    } else {
+      s.once("connect", emitJoinRoom);
+    }
+
+    // Cleanup: emit leave_room so the backend broadcasts to remaining members,
+    // then remove listeners. Don't disconnect the singleton socket.
+    return () => {
+      s.emit("leave_room", { communityId });
+      console.log("[ChatArea] Emitted leave_room for:", communityId);
+      s.off("receive_message");
+      s.off("message_deleted");
+      s.off("presence_update");
+      s.off("connect", emitJoinRoom);
+    };
   }, [community?.id, token]);
 
   /* Auto-scroll when messages change */
@@ -210,6 +283,7 @@ export default function ChatArea({
         .join("")
         .toUpperCase()
         .slice(0, 2),
+      avatarUrl: m.sender?.avatar_url || m.sender?.avatar_id || m.sender?.avatar || m.avatar_url || m.avatar_id,
       avatarColor: "bg-gradient-to-br from-indigo-400 to-violet-500",
       timestamp:
         (m.createdAt ?? m.created_at)
@@ -280,13 +354,12 @@ export default function ChatArea({
                   · {community.total_members} members
                 </span>
               )}
-              {community.online_members != null &&
-                community.online_members > 0 && (
-                  <span className="flex items-center gap-1 text-[11px] text-text-muted font-medium">
-                    <span className="w-1.5 h-1.5 rounded-full bg-online" />
-                    {community.online_members} online
-                  </span>
-                )}
+              {onlineCount > 0 && (
+                <span className="flex items-center gap-1 text-[11px] text-text-muted font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-online" />
+                  {onlineCount} / {community.total_members} online
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -422,7 +495,7 @@ export default function ChatArea({
                 message={mapMsg(m)}
                 onDelete={(msgId) => {
                   onDeleteMessage?.(community.id ?? community._id, msgId);
-                  setMessages((prev) =>
+                  onMessagesChange?.((prev) =>
                     prev.filter((msg) => (msg.id ?? msg._id) !== msgId),
                   );
                 }}
@@ -456,49 +529,105 @@ export default function ChatArea({
       {/* Input Area */}
       <div className="px-5 pb-4 pt-1">
         <div className="flex items-center gap-3 bg-[#f0f1f4] rounded-2xl px-4 py-3">
-          <button className="text-text-muted hover:text-primary transition-colors cursor-pointer">
-            <Paperclip size={20} strokeWidth={1.7} />
-          </button>
-          <input
-            type="text"
-            placeholder="Type a message..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            className="flex-1 text-[13px] text-text-primary placeholder:text-text-muted outline-none bg-transparent font-medium"
-          />
-          <button
-            onClick={handleVoiceClick}
-            disabled={sending || isTranscribing}
-            className={`text-text-muted transition-colors cursor-pointer flex items-center gap-1.5 ${
-              isRecording
-                ? "text-red-500 hover:text-red-400"
-                : "hover:text-primary"
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <Mic size={20} strokeWidth={1.7} />
-            {isRecording && (
-              <span className="text-[11px] text-red-500 font-semibold">
-                Recording...
-              </span>
-            )}
-            {isTranscribing && (
-              <span className="text-[11px] text-primary font-semibold">
-                Transcribing...
-              </span>
-            )}
-          </button>
-          <button
-            onClick={handleSend}
-            disabled={sending || !input.trim()}
-            className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center text-white cursor-pointer hover:bg-primary-dark transition-colors shadow-sm shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {sending ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <Send size={16} strokeWidth={2} className="ml-0.5" />
-            )}
-          </button>
+          {(isRecording || isPaused || isTranscribing) ? (
+            // WhatsApp-style Voice Recording UI
+            <div className="flex-1 flex items-center justify-between">
+              {/* Left Side: Discard and Duration */}
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={cancelRecording}
+                  disabled={isTranscribing || sending}
+                  className="w-8 h-8 rounded-full flex items-center justify-center text-text-muted hover:text-danger hover:bg-danger/10 transition-colors cursor-pointer disabled:opacity-50"
+                  title="Discard recording"
+                >
+                  <Trash2 size={18} strokeWidth={1.8} />
+                </button>
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`w-2.5 h-2.5 rounded-full bg-red-500 ${
+                      isRecording && !isPaused ? "animate-pulse" : ""
+                    }`}
+                  />
+                  <span className="text-[13px] font-semibold text-text-primary tabular-nums">
+                    {Math.floor(recordingDuration / 60)
+                      .toString()
+                      .padStart(2, "0")}
+                    :
+                    {(recordingDuration % 60).toString().padStart(2, "0")}
+                  </span>
+                  {isTranscribing && (
+                    <span className="text-[11px] text-primary font-semibold ml-2">
+                      Transcribing...
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Side: Pause/Resume and Send */}
+              <div className="flex items-center gap-2">
+                {!isTranscribing && !sending && (
+                  <button
+                    onClick={isPaused ? resumeRecording : pauseRecording}
+                    className="w-8 h-8 rounded-full flex items-center justify-center text-text-muted hover:text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+                    title={isPaused ? "Resume recording" : "Pause recording"}
+                  >
+                    {isPaused ? (
+                      <Mic size={18} strokeWidth={1.8} />
+                    ) : (
+                      <Pause size={18} strokeWidth={1.8} fill="currentColor" />
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={handleVoiceClick}
+                  disabled={sending || isTranscribing}
+                  className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center text-white cursor-pointer hover:bg-primary-dark transition-colors shadow-sm shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Send voice message"
+                >
+                  {sending || isTranscribing ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Send size={16} strokeWidth={2} className="ml-0.5" />
+                  )}
+                </button>
+              </div>
+            </div>
+          ) : (
+            // Standard Text Input UI
+            <>
+              <button className="text-text-muted hover:text-primary transition-colors cursor-pointer">
+                <Paperclip size={20} strokeWidth={1.7} />
+              </button>
+              <input
+                type="text"
+                placeholder="Type a message..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                className="flex-1 text-[13px] text-text-primary placeholder:text-text-muted outline-none bg-transparent font-medium"
+              />
+              {input.trim() ? (
+                <button
+                  onClick={handleSend}
+                  disabled={sending}
+                  className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center text-white cursor-pointer hover:bg-primary-dark transition-colors shadow-sm shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {sending ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Send size={16} strokeWidth={2} className="ml-0.5" />
+                  )}
+                </button>
+              ) : (
+                <button
+                  onClick={handleVoiceClick}
+                  className="text-text-muted hover:text-primary transition-colors cursor-pointer w-9 h-9 flex items-center justify-center rounded-xl hover:bg-black/5"
+                >
+                  <Mic size={20} strokeWidth={1.7} />
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 

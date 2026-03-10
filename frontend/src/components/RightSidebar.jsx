@@ -20,16 +20,6 @@ import {
 } from "lucide-react";
 
 /* ── Communities data ── */
-const accordionItems = [
-  { icon: Image, label: "Photos", count: 36 },
-  { icon: Film, label: "Videos", count: 12 },
-  { icon: File, label: "Files", count: 45 },
-  { icon: Headphones, label: "Audio", count: 8 },
-  { icon: Link2, label: "Links", count: 23 },
-  { icon: Mic, label: "Voice messages", count: 6 },
-];
-
-/* ── Friends data ── */
 const activityItems = [
   {
     avatar: "EC",
@@ -137,7 +127,26 @@ const archivedChats = [
 ];
 
 /* ── Top-card content per mode ── */
-function CommunityTopCard() {
+function CommunityTopCard({
+  community = null,
+  textMessagesCount = 0,
+  audioMessagesCount = 0,
+  onlineCount = 0,
+}) {
+  // Format creation date
+  const createdRaw = community?.created_at ?? community?.createdAt;
+  const createdDate = createdRaw
+    ? new Date(createdRaw).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      })
+    : "Unknown";
+
+  // Get member count
+  const memberCount =
+    community?.total_members ?? community?.members?.length ?? 0;
+
   return (
     <>
       <div className="px-5 pt-5 pb-4">
@@ -145,24 +154,66 @@ function CommunityTopCard() {
           Group Info
         </h3>
       </div>
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
-        {accordionItems.map(({ icon: Icon, label, count }) => (
-          <button
-            key={label}
-            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl hover:bg-[#f0f1f4] transition-colors cursor-pointer"
-          >
-            <Icon size={16} className="text-text-muted" strokeWidth={1.7} />
-            <span className="flex-1 text-left text-[13px] text-text-primary font-medium">
-              {label}
-            </span>
-            <span className="text-[12px] text-text-muted mr-1">{count}</span>
-            <ChevronDown
+      <div className="flex-1 overflow-y-auto px-4 pb-3 space-y-1.5">
+        {/* Date of Creation */}
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[#f0f1f4]">
+          <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
+            <CalendarDays
               size={14}
-              className="text-text-muted"
-              strokeWidth={2}
+              className="text-primary"
+              strokeWidth={1.8}
             />
-          </button>
-        ))}
+          </div>
+          <div>
+            <p className="text-[12.5px] font-semibold text-text-primary">
+              Date of Creation
+            </p>
+            <p className="text-[11px] text-text-muted">{createdDate}</p>
+          </div>
+        </div>
+
+        {/* Total Members */}
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[#f0f1f4]">
+          <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center">
+            <UserPlus size={14} className="text-blue-500" strokeWidth={1.8} />
+          </div>
+          <div>
+            <p className="text-[12.5px] font-semibold text-text-primary">
+              {memberCount} Members
+            </p>
+            <p className="text-[11px] text-text-muted">Total members</p>
+          </div>
+        </div>
+
+        {/* Text Messages */}
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[#f0f1f4]">
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+            <File size={14} className="text-emerald-500" strokeWidth={1.8} />
+          </div>
+          <div>
+            <p className="text-[12.5px] font-semibold text-text-primary">
+              {textMessagesCount} Text Messages
+            </p>
+            <p className="text-[11px] text-text-muted">Text content</p>
+          </div>
+        </div>
+
+        {/* Audio Files */}
+        <div className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-[#f0f1f4]">
+          <div className="w-8 h-8 rounded-lg bg-orange-500/10 flex items-center justify-center">
+            <Headphones
+              size={14}
+              className="text-orange-500"
+              strokeWidth={1.8}
+            />
+          </div>
+          <div>
+            <p className="text-[12.5px] font-semibold text-text-primary">
+              {audioMessagesCount} Audio Files
+            </p>
+            <p className="text-[11px] text-text-muted">Voice messages</p>
+          </div>
+        </div>
       </div>
     </>
   );
@@ -232,10 +283,24 @@ function getInitials(name = "") {
     .slice(0, 2);
 }
 
-function CommunityBottomCard({ community, onMakeAdmin, onRemoveAdmin }) {
+function CommunityBottomCard({
+  community,
+  onlineUserIds = new Set(),
+  onMakeAdmin,
+  onRemoveAdmin,
+}) {
   const { user } = useAuth();
   const memberList = Array.isArray(community?.members) ? community.members : [];
   const totalCount = community?.total_members ?? memberList.length;
+
+  // Sort members: online first, then offline
+  const sortedMembers = [...memberList].sort((a, b) => {
+    const aId = a.id ?? a._id ?? a.userId;
+    const bId = b.id ?? b._id ?? b.userId;
+    const aOnline = onlineUserIds.has(aId);
+    const bOnline = onlineUserIds.has(bId);
+    return bOnline - aOnline; // Online members first (true = 1, false = 0)
+  });
 
   // Determine if current user is owner
   const role = (community?.role ?? community?.userRole ?? "").toLowerCase();
@@ -258,12 +323,13 @@ function CommunityBottomCard({ community, onMakeAdmin, onRemoveAdmin }) {
             No members
           </p>
         ) : (
-          memberList.map((member) => {
+          sortedMembers.map((member) => {
             const mId = member.id ?? member._id ?? member.userId;
             const name = member.name ?? member.user?.name ?? "Unknown";
             const email = member.email ?? "";
             const role = (member.role ?? "").toLowerCase();
             const isAdmin = role === "admin" || role === "owner";
+            const isOnline = onlineUserIds.has(mId);
             const isMemberOwner =
               role === "owner" ||
               String(mId) ===
@@ -274,11 +340,25 @@ function CommunityBottomCard({ community, onMakeAdmin, onRemoveAdmin }) {
                 className="flex items-center gap-3 px-3 py-2 rounded-xl hover:bg-[#f0f1f4] transition-colors cursor-pointer"
               >
                 <div className="relative flex-shrink-0">
-                  <div
-                    className={`w-8 h-8 rounded-full ${pickMemberColor(mId)} flex items-center justify-center text-white text-[10px] font-bold`}
-                  >
-                    {getInitials(name)}
-                  </div>
+                  {member.avatar_url || member.avatar || member.image ? (
+                    <img
+                      src={member.avatar_url || member.avatar || member.image}
+                      alt={name}
+                      className="w-8 h-8 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div
+                      className={`w-8 h-8 rounded-full ${pickMemberColor(mId)} flex items-center justify-center text-white text-[10px] font-bold`}
+                    >
+                      {getInitials(name)}
+                    </div>
+                  )}
+                  {/* Online indicator */}
+                  <span
+                    className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-card ${
+                      isOnline ? "bg-online" : "bg-text-muted/30"
+                    }`}
+                  />
                 </div>
                 <div className="flex-1 min-w-0">
                   <span className="block text-[13px] text-text-primary font-medium truncate">
@@ -619,6 +699,10 @@ export default function RightSidebar({
   mode = "communities",
   discoverCommunity = null,
   activeCommunity = null,
+  textMessagesCount = 0,
+  audioMessagesCount = 0,
+  onlineUserIds = new Set(),
+  onlineCount = 0,
   onMakeAdmin,
   onRemoveAdmin,
 }) {
@@ -673,6 +757,13 @@ export default function RightSidebar({
       >
         {isDiscover ? (
           <DiscoverDetailCard community={discoverCommunity} />
+        ) : rendered === "communities" ? (
+          <CommunityTopCard
+            community={activeCommunity}
+            textMessagesCount={textMessagesCount}
+            audioMessagesCount={audioMessagesCount}
+            onlineCount={onlineCount}
+          />
         ) : (
           <TopComp />
         )}
@@ -691,6 +782,7 @@ export default function RightSidebar({
         {!isDiscover && (
           <BottomComp
             community={activeCommunity}
+            onlineUserIds={onlineUserIds}
             onMakeAdmin={onMakeAdmin}
             onRemoveAdmin={onRemoveAdmin}
           />
