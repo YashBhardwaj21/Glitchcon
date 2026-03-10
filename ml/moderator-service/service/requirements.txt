@@ -25,9 +25,6 @@ bcrypt                    # passlib[bcrypt] pulls this, but pin it explicitly
 
 # ── LLM providers ─────────────────────────────────────────
 groq                      # Groq async client (Llama-3)
-google-generativeai       # Gemini provider
-openai                    # OpenRouter uses openai-compatible API
-aiohttp                   # required internally by google-generativeai
 
 # ── AI / ML pipeline ──────────────────────────────────────
 sentence-transformers     # paraphrase-multilingual-MiniLM-L12-v2
@@ -35,9 +32,8 @@ faiss-cpu                 # FAISS vector index (CPU); swap to faiss-gpu if CUDA 
 numpy                     # required by faiss-cpu and sentence-transformers
 
 # ── Multilingual / NLP ────────────────────────────────────
-langdetect                # language detection (Stage 0)
 indic-transliteration     # Roman-script Indic → Unicode normalisation (Stage 0)
-better-profanity          # English profanity filter (Stage 1)
+langdetect                # language detection (Stage 0)
 
 # ── Templating ────────────────────────────────────────────
 jinja2                    # feedback message templates

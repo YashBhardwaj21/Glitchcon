@@ -44,6 +44,12 @@ models/
 *.log
 logs/
 
+# Test Results & Temp Files
+*.txt
+!requirements*.txt
+*.ps1
+!test_categorization.ps1
+
 # Docker
 .docker/
 

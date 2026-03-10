@@ -74,7 +74,7 @@ class ModerationLog(Base):
     latency_stage3_ms = Column(Integer, default=0)
     total_latency_ms = Column(Integer, default=0)
     
-    llm_provider = Column(String)              # "groq", "gemini", etc.
+    llm_provider = Column(String)              # "groq"
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 
 class PromptTemplate(Base):

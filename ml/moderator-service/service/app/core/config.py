@@ -6,9 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: str = ""
-    GEMINI_API_KEY: str = ""
-    OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "mistralai/mistral-7b-instruct:free"
+    GROQ_API_KEY: str = ""
 
     DATABASE_URL: str
     REDIS_URL: str
