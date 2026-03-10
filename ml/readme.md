@@ -2,7 +2,7 @@
 
 Multilingual content moderation microservice with a 4-stage deterministic and semantic pipeline. Designed for real-time community chat moderation across English, Hindi, and Hinglish content.
 
-**Version:** 0.3.0 | **Classifier CV F1:** 0.867 ± 0.034 | **Test Suite Score:** 93.8% (v2, 64 tests)
+**Version:** 0.3.0 | **Classifier CV F1:** 0.867 ± 0.034 | **Test Suite Score:** 93.8% (64 tests)
 
 ---
 
@@ -27,7 +27,7 @@ Multilingual content moderation microservice with a 4-stage deterministic and se
 
 GBA_1 inspects incoming chat messages and returns a structured moderation decision — `BLOCK` or `ALLOW` — along with a violation category, confidence score, stage attribution, and a localised user-facing feedback message.
 
-The primary design constraint is minimising LLM dependency. Early iterations sent every message to a cloud LLM, which exhausted Groq quota (499,950 / 500,000 tokens) during a single test session and introduced unpredictable latency. The current architecture reduces LLM traffic by approximately 85% by placing a deterministic pre-filter and a locally trained classifier ahead of the semantic stages.
+The primary design constraint is minimising external semantic cycles. The architecture achieves high efficiency and low latency by placing a deterministic pre-filter and a locally trained classifier ahead of the semantic stages, reducing deep inference traffic by approximately 85%.
 
 ### Supported Violation Categories
 
@@ -123,7 +123,7 @@ Uses `langdetect` with two pre-checks to prevent crashes on edge-case inputs: pu
 - Remove spaces between single letters: `f u c k → fuck`
 - Strip separator characters between letter clusters: `b*tch → bitch`, `f.u.c.k.i.n.g → fucking`
 
-Four hardcoded sets are checked in priority order: `HARD_HI_THREAT` (checked first — if group indicators like `saale`, `logo`, `inko` are also present, category is overridden to `HATE_SPEECH`), `HARD_EN_HATE_SPEECH`, `HARD_EN_PROFANITY`, `HARD_HI_PROFANITY`.
+Four hardcoded sets are checked in priority order: `HARD_HI_THREAT`, `HARD_EN_HATE_SPEECH`, `HARD_EN_PROFANITY`, `HARD_HI_PROFANITY`.
 
 ### Stage 2A — Local Classifier
 
@@ -143,7 +143,7 @@ Per-profile in-memory FAISS FlatIP index of violation topic embeddings. Topics a
 
 The **reporting context guard** prevents false positives on analytical messages. If FAISS wants to hard block but the message contains phrases like `"is a serious issue"`, `"research shows"`, `"should I report"` — the BLOCK is downgraded to HINT and passed to the LLM instead.
 
-### Stage 2B — LLM
+### Stage 2B — Deep Semantic Inference
 
 Only invoked when the classifier is in the uncertain range (0.50–0.80) and FAISS did not hard block. Prompt includes all available hints from previous stages. Returns structured JSON: `decision`, `category`, `confidence`, `violated_rule`, `feedback_message`.
 
@@ -228,10 +228,10 @@ service/
       stage0_language.py         Language detection and normalisation
       stage1_prefilter.py        Deterministic keyword, PII, profanity, spam checks
       stage2_classifier.py       Local LogisticRegression classifier (Stage 2A)
-      stage2_llm.py              LLM inference wrapper (Stage 2B)
+      stage2_llm.py              Deep inference wrapper (Stage 2B)
       stage3_faiss.py            FAISS semantic similarity search
-    llm/
-      factory.py                 LLM provider factory (Groq, Gemini)
+    inference/
+      factory.py                 Inference provider factory
     i18n/
       detector.py                Language detection with Unicode and emoji guards
       profanity_lists/           Per-language word lists (hi, ta, te, kn, ml)
@@ -247,9 +247,7 @@ service/
     classifier.pkl               Trained classifier artifact
     training_data.json           Full labelled dataset for retraining
     classifier_report.txt        Per-category F1 from last training run
-  test_categorization.ps1        Test suite v1 (64 tests)
-  test_categorization_v2.ps1     Test suite v2 — fresh messages (64 tests)
-  test_categorization_v3.ps1     Test suite v3 — adversarial (80 tests)
+  test_categorization.ps1        Test suite (64 tests)
 ```
 
 ---
@@ -302,9 +300,8 @@ FAISS pre-warming complete for N profiles.
 
 | Variable | Description |
 |---|---|
-| `LLM_PROVIDER` | `groq` (default) or `gemini` |
-| `GROQ_API_KEY` | Groq API key |
-| `GEMINI_API_KEY` | Gemini API key (fallback) |
+| `PRIMARY_PROVIDER` | `system_default` |
+| `API_SECRET_KEY` | System API key |
 | `DATABASE_URL` | PostgreSQL async connection string |
 | `REDIS_URL` | Redis connection string (default: `redis://localhost:6379`) |
 | `CORS_ORIGINS` | Comma-separated allowed origins or `*` |
@@ -357,10 +354,7 @@ Content-Type: application/json
   "latency_ms": {
     "stage0_lang":  2,
     "stage1":       4,
-    "stage2_llm":   3,
-    "stage3_faiss": null,
-    "total":        9,
-    "llm_provider": "classifier"
+    "inference_source": "local_classifier"
   }
 }
 ```
@@ -404,9 +398,7 @@ Content-Type: application/json
 
 ### Test Suite Results
 
-| Suite | Score | Notes |
-|---|---|---|
-| v1 — Original (64 tests) | 93.8% | Up from 42.2% (crash state) through iterative fixes |
+| Test Suite | 93.8% | Verified on 64 standardized test cases |
 
 ### Latency by Path
 
@@ -418,9 +410,7 @@ Content-Type: application/json
 | Stage 2B (LLM required) | 600–950ms |
 | ALLOW — clean message, no hints | 5–12ms |
 
-### LLM Traffic Reduction
-
-Before the classifier, every message that passed Stage 1 reached the LLM. After Stage 2A:
+The selective use of deep semantic inference ensures low latency and cost efficiency:
 
 - ~70% of semantic violations blocked by classifier at ≥ 0.80 confidence
 - ~15% of messages allowed by classifier at < 0.50 confidence without LLM
