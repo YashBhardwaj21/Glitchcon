@@ -1,0 +1,13 @@
+CV F1: 0.867 ± 0.034
+
+              precision    recall  f1-score   support
+
+ HATE_SPEECH       1.00      0.99      0.99        85
+        NONE       0.99      0.99      0.99       130
+        SCAM       1.00      1.00      1.00        75
+   SELF_HARM       1.00      0.99      0.99        74
+      THREAT       0.96      0.99      0.98        82
+
+    accuracy                           0.99       446
+   macro avg       0.99      0.99      0.99       446
+weighted avg       0.99      0.99      0.99       446

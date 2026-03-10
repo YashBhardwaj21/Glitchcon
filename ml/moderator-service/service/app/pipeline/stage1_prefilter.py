@@ -11,6 +11,10 @@ _LEET_MAP = {
     '@': 'a', '3': 'e', '1': 'i', '0': 'o',
     '5': 's', '7': 't', '$': 's', '!': 'i',
     '+': 't', '|': 'l',
+    '9': 'g',   # n1993r → nigger
+    '4': 'a',   # f4ggot → faggot
+    '8': 'b',   # b8tch edge cases
+    '6': 'b',   # less common but used
 }
 
 def normalise_for_lookup(text: str) -> str:
@@ -19,7 +23,7 @@ def normalise_for_lookup(text: str) -> str:
       - Leet-speak substitution:  @ssh0le  → asshole
       - Repeated characters:      fuuuuck  → fuck
       - Spaces between letters:   f u c k  → fuck
-      - Punctuation separators:   f.u.c.k  → fuck
+      - Punctuation separators:   f.u.c.k / b*tch → fuck / bitch
     Called on ENGLISH / Hinglish text only — not Devanagari.
     """
     text = text.lower()
@@ -29,8 +33,9 @@ def normalise_for_lookup(text: str) -> str:
     text = re.sub(r'(.)\1{2,}', r'\1', text)
     # Remove spaces sandwiched between single letters: "f u c k" → "fuck"
     text = re.sub(r'(?<![a-z])(?:[a-z]\s+)+[a-z](?![a-z])', lambda m: m.group(0).replace(' ', ''), text)
-    # Strip dots/dashes/underscores/asterisks between any two letters: "f.u.c.k.i.n.g" → "fucking"
-    text = re.sub(r'(?<=[a-z])[.\-_*](?=[a-z])', '', text)
+    # FIX: strip dots/dashes/underscores/asterisks between letter clusters (not just single chars)
+    # b*tch → bitch,  f.u.c.k.i.n.g → fucking,  f**k → fk (still caught by profanity list)
+    text = re.sub(r'(?<=[a-z])[.\-_*]+(?=[a-z])', '', text)
     return text
 
 
@@ -46,7 +51,7 @@ PII_PATTERNS = {
     "card_number":  re.compile(r"\b\d{4}[\s-]\d{4}[\s-]\d{4}[\s-]\d{4}\b"),
 }
 
-# Racial/identity slurs → HATE_SPEECH category
+# Racial/identity slurs → HATE_SPEECH
 HARD_EN_HATE_SPEECH = {
     "nigger", "nigga",
     "kike",
@@ -56,22 +61,23 @@ HARD_EN_HATE_SPEECH = {
     "bhangi",
 }
 
-# Severe profanity → PROFANITY category
+# Severe profanity → PROFANITY
 HARD_EN_PROFANITY = {
     "motherfucker", "motherfucking", "cunt",
     "fucking", "fuckyou", "fuckoff",
     "asshole", "bastard", "bitch", "dickhead",
+    "shit", "bullshit",     # keeping here — context determines if hate or profanity
+                             # keyword Redis set should NOT tag "shit" as hate_speech
 }
 
-# Hindi/Hinglish slurs → PROFANITY category
+# Hindi/Hinglish slurs → PROFANITY
 HARD_HI_PROFANITY = {
     "madarchod", "bhenchod", "behenchod", "chutiya", "chutiye",
     "gaandu", "gandu", "randi", "bhosdike", "bhosdika",
     "lodu", "laude", "lavde",
 }
 
-# Hindi threat phrases → THREAT category
-# Checked BEFORE profanity so "maar do sala harami" → THREAT not PROFANITY
+# Hindi threat phrases → THREAT (checked before profanity)
 HARD_HI_THREAT = {
     "maar do",
     "maar dalo",
@@ -84,16 +90,27 @@ HARD_HI_THREAT = {
     "sar kaato",
 }
 
-# When a Hindi threat phrase targets a GROUP rather than an individual,
-# it should be HATE_SPEECH not THREAT.
-# These are plural/group indicators in Hinglish: "these people", "them all", etc.
+# When threat targets a GROUP (plural indicators) → HATE_SPEECH, not THREAT
 GROUP_INDICATORS_HI = {
-    "saale", "saalo",   # plural derogatory
-    "inko", "unko",     # them (object)
-    "logo", "log",      # people
-    "sab ko", "sabko",  # everyone
-    "inhe", "unhe",     # them
+    "saale", "saalo",
+    "inko", "unko",
+    "logo", "log",
+    "sab ko", "sabko",
+    "inhe", "unhe",
 }
+
+# Maps violation type strings → (category, template_key)
+# Clean lookup table — extend here without touching process logic
+_VIOLATION_CATEGORY_MAP = {
+    "hate_speech_en":           ("HATE_SPEECH", "hate_speech"),
+    "hate_speech_group_threat": ("HATE_SPEECH", "hate_speech"),
+    "threat_hi":                ("THREAT",      "threat"),
+}
+
+def _resolve_violation_category(v_type: str) -> tuple[str, str]:
+    if v_type in _VIOLATION_CATEGORY_MAP:
+        return _VIOLATION_CATEGORY_MAP[v_type]
+    return ("PROFANITY", "profanity")
 
 
 class ProfanityChecker:
@@ -123,16 +140,14 @@ class ProfanityChecker:
         normalised = normalise_for_lookup(text_lower)
         words_in_text = set(text_lower.split())
 
-        # 1. Hindi threat phrases — checked first, takes priority
+        # 1. Hindi threat phrases first
         for phrase in HARD_HI_THREAT:
             if phrase in text_lower:
-                # Disambiguate: threat against a GROUP → HATE_SPEECH
-                # "ye saale log maar do" targets a group, not an individual
                 if words_in_text & GROUP_INDICATORS_HI:
                     return True, "hate_speech_group_threat"
                 return True, "threat_hi"
 
-        # 2. English hate speech slurs
+        # 2. English hate speech slurs (check normalised for leet bypass)
         for word in HARD_EN_HATE_SPEECH:
             if word in normalised or word in text_lower:
                 return True, "hate_speech_en"
@@ -147,7 +162,7 @@ class ProfanityChecker:
             if word in normalised or word in text_lower:
                 return True, "profanity_hi"
 
-        # 5. File-loaded Indic profanity lists
+        # 5. File-loaded Indic lists
         lang = lang_ctx.code
         langs_to_check = []
         if lang in cls._indic_profanity:
@@ -243,28 +258,11 @@ class SpamChecker:
         return results[2] > limit
 
 
-# Maps v_type strings returned by ProfanityChecker to (category, template_key)
-_VIOLATION_CATEGORY_MAP = {
-    "hate_speech_en":           ("HATE_SPEECH", "hate_speech"),
-    "hate_speech_group_threat": ("HATE_SPEECH", "hate_speech"),
-    "threat_hi":                ("THREAT",      "threat"),
-}
-
-def _resolve_violation_category(v_type: str) -> tuple[str, str]:
-    """
-    Maps a violation type string to (category, template_key).
-    Falls back to PROFANITY for all profanity_* types.
-    """
-    if v_type in _VIOLATION_CATEGORY_MAP:
-        return _VIOLATION_CATEGORY_MAP[v_type]
-    return ("PROFANITY", "profanity")
-
-
 class Stage1Prefilter:
     """
     Stage 1 — Fast Pre-filter (Multilingual)
-    Executes Spam, PII, Profanity, and Keyword checks.
-    Takes < 10 ms. Blocks ~70% of violations without LLM calls.
+    Executes Spam, PII, Profanity/HateSpeech/Threat, and Keyword checks.
+    Takes < 10 ms. Blocks deterministic violations without LLM calls.
     """
 
     @staticmethod
@@ -280,24 +278,18 @@ class Stage1Prefilter:
         is_spam = await SpamChecker.check(user_id, profile, redis)
         if is_spam:
             return PreFilterResult(
-                blocked=True,
-                stage="stage1",
-                matched="spam_limit_exceeded",
-                template_key="spam",
-                detected_language=lang_ctx.code,
-                category="SPAM"
+                blocked=True, stage="stage1",
+                matched="spam_limit_exceeded", template_key="spam",
+                detected_language=lang_ctx.code, category="SPAM"
             )
 
         # 2. PII check
         has_pii, pii_type = PIIChecker.check(text)
         if has_pii:
             return PreFilterResult(
-                blocked=True,
-                stage="stage1",
-                matched=pii_type,
-                template_key="pii",
-                detected_language=lang_ctx.code,
-                category="PII"
+                blocked=True, stage="stage1",
+                matched=pii_type, template_key="pii",
+                detected_language=lang_ctx.code, category="PII"
             )
 
         # 3. Profanity / Hate Speech / Threat check
@@ -305,12 +297,9 @@ class Stage1Prefilter:
         if has_violation:
             category, template_key = _resolve_violation_category(v_type)
             return PreFilterResult(
-                blocked=True,
-                stage="stage1",
-                matched=v_type,
-                template_key=template_key,
-                detected_language=lang_ctx.code,
-                category=category
+                blocked=True, stage="stage1",
+                matched=v_type, template_key=template_key,
+                detected_language=lang_ctx.code, category=category
             )
 
         # 4. Keyword check (Redis TF-IDF SETs)
@@ -318,28 +307,19 @@ class Stage1Prefilter:
 
         if keyword_result.decision == "BLOCK":
             return PreFilterResult(
-                blocked=True,
-                stage="stage1",
-                matched=keyword_result.matched,
-                template_key="keyword",
-                detected_language=lang_ctx.code,
-                category="HATE_SPEECH"
+                blocked=True, stage="stage1",
+                matched=keyword_result.matched, template_key="keyword",
+                detected_language=lang_ctx.code, category="HATE_SPEECH"
             )
         elif keyword_result.decision == "HINT":
             return PreFilterResult(
-                blocked=False,
-                stage="stage1",
-                matched=keyword_result.matched,
-                template_key="keyword",
+                blocked=False, stage="stage1",
+                matched=keyword_result.matched, template_key="keyword",
                 detected_language=lang_ctx.code,
-                keyword_hint=keyword_result.hint,
-                category="NONE"
+                keyword_hint=keyword_result.hint, category="NONE"
             )
 
-        # Passed all fast checks — proceed to FAISS/LLM
         return PreFilterResult(
-            blocked=False,
-            stage="stage1",
-            detected_language=lang_ctx.code,
-            category="NONE"
+            blocked=False, stage="stage1",
+            detected_language=lang_ctx.code, category="NONE"
         )

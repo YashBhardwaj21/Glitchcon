@@ -1,0 +1,611 @@
+"""
+scripts/build_training_data.py
+
+Comprehensive labelled training dataset for the moderation classifier.
+Target: 120+ examples per violation category, 200+ NONE examples.
+Coverage: English, Hindi, Hinglish, code-mixed, indirect phrasing, bypass attempts.
+
+Run:
+    python scripts/build_training_data.py
+    → writes data/training_data.json
+"""
+
+import json
+import os
+from collections import Counter
+
+
+LABELLED_EXAMPLES = {
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # THREAT
+    # Covers: direct threats, location threats, doxxing, veiled/polite threats,
+    #         conditional threats, group threats, Hindi/Hinglish variants,
+    #         cyber threats, implied violence
+    # ─────────────────────────────────────────────────────────────────────────
+    "THREAT": [
+        # Direct English threats
+        "I will kill you if you say that one more time",
+        "You are going to regret this I promise you that",
+        "I know where you live and I am coming for you tonight",
+        "Say that again and I will break every bone in your body",
+        "I will destroy you and everything you love",
+        "You better watch your back when you leave the house",
+        "I will hunt you down no matter where you go",
+        "Your life is in danger if you keep pushing me",
+        "I will make sure you never walk properly again",
+        "You have made a deadly mistake messing with me",
+        "I will end you before this week is over",
+        "Keep talking and find out what happens to you",
+        "I am going to hurt you so badly you will wish you were dead",
+        "One more message from you and you will disappear",
+        "I will send people to deal with you personally",
+        "You will not be alive to see next week if you continue",
+        "I have your address and I am not afraid to use it",
+        "Consider this your final warning before I act",
+        "I will come to your house and make you pay",
+        "Enjoy your life while you still have one",
+
+        # Veiled / polite phrased threats
+        "I would strongly advise you to stop posting here for your own safety",
+        "It would be in your best interest to watch what you say",
+        "I am just saying you should be more careful about where you walk at night",
+        "People who talk the way you do tend to have accidents",
+        "I have friends who specialise in dealing with people like you",
+        "Something very unfortunate might happen to you if you are not careful",
+        "I would not want anything bad to happen to you or your family",
+        "It would be wise to reconsider your position before it is too late",
+        "You should think about your family before posting things like this",
+        "I hope you have good insurance is all I will say",
+        "I know some people who would love to have a word with you",
+        "You might want to change your route home tonight",
+        "Things have a funny way of coming back around to people like you",
+        "I am not threatening you I am just letting you know what could happen",
+        "Enjoy your evening walk I know your usual route very well",
+
+        # Doxxing
+        "I found your home address and I am going to post it everywhere",
+        "Your address is being shared in every group I am in right now",
+        "I know your name your college and your hostel block number",
+        "I have your IP address and I can find exactly where you are",
+        "Your phone number and home address will be in this group tomorrow",
+        "I am going to expose your real name and location to everyone here",
+        "Found your LinkedIn your company and your office address",
+        "I have screenshots of your ID I will post them publicly",
+        "I know your parents names and where they work as well",
+        "Your address is already on the group bro enjoy the visitors",
+        "Shared your location to 10 different people good luck",
+        "I have your Aadhaar photo and I know exactly who you are",
+        "Posted your address on the other forum already",
+        "Your college ID photo and address are going viral tonight",
+
+        # Conditional threats
+        "If you do not delete that post I will make your life hell",
+        "Either you apologise publicly or I will ruin your reputation",
+        "One more word and I send everything I have on you to your college",
+        "Remove that comment or your family will know what you have been doing",
+        "Pay me or I release your private photos to everyone",
+        "Stop talking or I will come find you this weekend",
+        "Delete your account by tomorrow or face consequences",
+        "If you show up tomorrow you will not be walking home",
+        "Keep ignoring me and see what I do next",
+        "Do what I say or things will get very bad for you very fast",
+
+        # Hindi / Hinglish direct
+        "tujhe maar dunga agar tu band nahi hua toh",
+        "teri gali ka pata lag gaya hai mujhe sambhal ke rehna",
+        "main jaanta hoon tu kahan rehta hai raat ko bahar mat nikalna",
+        "tujhe dhundh lenge hum chhup ke baith",
+        "aaj raat ghar pohonchega tu ya nahi ye dekhte hain",
+        "tera schedule pata hai mujhe soch ke chal",
+        "tere ghar walo ka bhi pata hai hamare paas",
+        "bata denge sab ko kahan milega tu aaj raat",
+        "police se pehle main pohonch jaunga tere paas",
+        "ek aur cheez boli toh main action lunga tere khilaf seriously",
+        "tujhe is shehar mein rehna padega toh dhyan se rehna",
+        "tere baap ka naam aur ghar ka pata dono pata hain mujhe",
+        "band kar apni bakwaas warna tujhe pata chalega",
+        "teri job ka pata hai mujhe teri company ko bhi bataunga",
+        "nikal yahan se warna kuch acha nahi hoga tere saath",
+
+        # Cyber threats
+        "I will hack your account and leak all your private messages",
+        "Your data is being downloaded right now enjoy",
+        "I have already installed a keylogger on your system",
+        "I will DDoS your server until it goes offline permanently",
+        "Your accounts are going to be compromised tonight",
+        "I know your password and I am already inside your email",
+        "I will report your account until it gets permanently banned",
+        "I am going to spam every platform you are on until you are gone",
+    ],
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HATE_SPEECH
+    # Covers: racial hate, religious hate, casteism, gender discrimination,
+    #         dehumanisation, incitement, India-specific communal hate,
+    #         LGBTQ hate, coded hate language, Hindi/Hinglish variants
+    # ─────────────────────────────────────────────────────────────────────────
+    "HATE_SPEECH": [
+        # Dehumanisation
+        "These people are like cockroaches breeding everywhere we go",
+        "These migrants are rats infesting our neighbourhoods",
+        "They are not human beings they are animals that need to be put down",
+        "These people are a disease spreading through our country like a plague",
+        "They are parasites living off the hard work of real citizens",
+        "These people should be exterminated like the vermin they are",
+        "They multiply like insects and take over every space they enter",
+        "This group of people is a cancer that needs to be removed",
+        "They are subhuman and should be treated as such",
+        "These creatures have no place in civilised society",
+        "They are literally an infestation that needs to be cleaned out",
+        "These people are genetic waste dragging down our society",
+
+        # Religious hate — India context
+        "All Muslims should be thrown out of this country immediately",
+        "Hindus should drive every Muslim out of India for good",
+        "This country would be better off without any Muslims in it",
+        "They are converting people by force and must be stopped violently",
+        "All these minorities should go back to Pakistan where they belong",
+        "This is a Hindu rashtra and others have no place here at all",
+        "These people follow a religion of violence and terror",
+        "Muslim population growth is a conspiracy to take over our nation",
+        "Every mosque in this country should be demolished",
+        "These Hindus are destroying the fabric of our secular nation",
+        "Christians are just agents of western colonisation destroy their churches",
+        "These kafirs need to be dealt with according to sharia",
+        "Cow worshippers are backward superstitious idiots who ruin everything",
+        "These mullahs are radicalising everyone they should all be jailed",
+
+        # Casteism — India
+        "These chamars think they deserve equal rights how disgusting",
+        "Dalits should stay in their place and stop demanding reservations",
+        "These lower caste people are polluting our community and temples",
+        "Reservation is just giving jobs to undeserving low castes over merit",
+        "These people are genetically inferior that is just biological fact",
+        "Upper caste people built this civilisation these others just leech off it",
+        "Untouchables should not be allowed to enter our temples period",
+        "These SC ST people are ruining our country with their quotas",
+        "Why should my child lose a seat to some worthless low caste",
+        "These people were meant to serve not to lead",
+
+        # Gender discrimination / misogyny
+        "Women are too emotional to lead engineering teams it is just biology",
+        "Women belong in the kitchen not in tech companies",
+        "Fire all female engineers they just create drama and problems",
+        "Girls are not capable of doing real programming it is a fact",
+        "Women should not be in leadership positions they lack logical thinking",
+        "She got the job only because of gender quota not any actual merit",
+        "Women are biologically inferior at mathematics and engineering",
+        "Female engineers bring down the quality of every team they join",
+        "Women should stay home and raise children not take men's jobs",
+        "No woman has ever created anything important in tech history",
+        "Women are just diversity hires they cannot actually code properly",
+        "She is too emotional to handle this kind of high pressure work",
+
+        # LGBTQ hate
+        "Gay people are mentally ill and should be forcibly treated",
+        "These people are an abomination against nature and religion",
+        "Homosexuality is a disease that is being promoted to corrupt our youth",
+        "Trans people are just confused men in dresses they need therapy",
+        "LGBTQ agenda is destroying our culture and corrupting children",
+        "These perverts should not be allowed near children ever",
+        "Being gay is a choice and a sin they deserve what they get",
+        "Gay marriage is an insult to thousands of years of human tradition",
+
+        # Incitement and calls to action
+        "We need to cleanse this country of these people once and for all",
+        "Someone needs to do something about these people before it is too late",
+        "Round them all up and send them away from our country",
+        "We should start boycotting every business owned by these people",
+        "It is time to take matters into our own hands against these invaders",
+        "Rise up and drive these people out of our neighbourhoods",
+        "We need a final solution to the problem these people have created",
+        "Start attacking their establishments and show them we are serious",
+
+        # Hindi / Hinglish hate
+        "in musalmano ko is desh se bahar nikalo abhi",
+        "yeh log is desh ke layak nahi hain inhe bhagao",
+        "in logo ko yahan se nikaal do yeh hamare dushman hain",
+        "yeh sab desh drohi hain inhe pakad ke jail mein daalo",
+        "inki aulad bhi hamare desh mein rehne layak nahi hai",
+        "yeh log humare desh ka khaana kha ke humse hi lad te hain",
+        "in chamaron ko barabar ka haq nahi milna chahiye kabhi",
+        "yeh neech log temple mein kaise aa sakte hain",
+        "auraton ko ghar pe rehna chahiye kaam pe kya karengi",
+        "yeh LGBT wale hamare baccho ko kharab kar rahe hain",
+        "in logo ko maar do sala desh ke dushman hain sab",
+        "yeh minority wale hamesha drama karte hain inko ignore karo",
+        "in immigrants ko waapas bhejo yeh hamare resources kha rahe hain",
+        "inki reservation cancel karo yeh deserve nahi karte",
+
+        # Coded / euphemistic hate
+        "These people are not like us and never will be",
+        "I am not racist but these people just have different values that clash with ours",
+        "We need to preserve our culture from being replaced by outsiders",
+        "It is just statistics that this group commits more crime",
+        "I am just asking questions about why this group always ends up at the bottom",
+        "The great replacement is happening right in front of our eyes",
+        "Our people need to wake up before we become a minority in our own land",
+    ],
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SCAM
+    # Covers: investment scams, crypto scams, job scams, lottery scams,
+    #         phishing, OTP fraud, romance scams, Ponzi, Hinglish variants
+    # ─────────────────────────────────────────────────────────────────────────
+    "SCAM": [
+        # Investment / trading scams
+        "I can double your money in 30 days guaranteed just DM me",
+        "My broker gives 100 percent guaranteed returns every month contact me",
+        "Invest 10000 and get 100000 back in one week absolutely no risk",
+        "This trading platform gives 5x returns monthly ping me for details",
+        "I made 2 lakh last week from this one simple proven method",
+        "Secret investment trick that banks and brokers don't want you to know",
+        "Guaranteed profit in forex trading join my VIP group now",
+        "Risk free investment with 200 percent annual returns call me today",
+        "My friend made 5 crore last year using this exact system",
+        "Join my Telegram group for daily guaranteed trading signals it works",
+        "Zero risk investment plan with 50 percent monthly profit guaranteed",
+        "I turned 5000 into 2 lakh in just 3 weeks using this strategy",
+        "Mutual fund that guarantees 15 percent monthly returns no loss ever",
+        "This is a government approved scheme with guaranteed daily returns",
+        "Invest your savings and I will triple them within 60 days promise",
+
+        # Crypto scams
+        "Buy this new crypto coin before it 100x guaranteed DM me now",
+        "Elon Musk is giving away Bitcoin send 1 BTC get 2 back immediately",
+        "This altcoin is going to moon before end of month get in now",
+        "Get in early on this ICO before it explodes guaranteed gains",
+        "Bitcoin pump confirmed by insiders buy right now before it is too late",
+        "My crypto mining pool pays 3 percent daily just deposit and earn",
+        "This token will 50x in 2 weeks I have insider information",
+        "Crypto arbitrage bot earns 500 dollars per day automatically",
+        "Join our crypto signals group 95 percent win rate proven results",
+        "Free crypto airdrop claim 0.5 ETH just connect your wallet here",
+        "This DeFi protocol gives 1000 percent APY completely safe",
+        "NFT flip strategy that made me 10 lakh in one month join now",
+
+        # Job / work from home scams
+        "Work from home earn 50000 per month no skills or experience required",
+        "Data entry job pays 5000 per day apply now no experience needed",
+        "Part time job just 2 hours daily earn 1 lakh per month easily",
+        "Urgent hiring work from phone earn 3000 rupees per hour",
+        "Online job no investment required earn in dollars from home today",
+        "Amazon reseller program earn 80000 monthly working 3 hours a day",
+        "Become a freelancer earn 2 lakh per month I will train you free",
+        "YouTube management job pays 1 lakh monthly just like and comment",
+        "Simple typing job earn 500 per hour from home no experience",
+        "Daily payment online task earn 1000 to 5000 rupees every day",
+        "Earn money by watching ads online 3000 rupees per day guaranteed",
+
+        # Phishing / OTP / credential theft
+        "Send me your OTP quickly for urgent KYC verification process",
+        "Your bank account will be blocked share the OTP to unblock now",
+        "RBI has frozen accounts share your details immediately to unblock",
+        "Please share your Aadhaar OTP for urgent government verification",
+        "Click this link and enter your bank details to claim your refund",
+        "Your account shows suspicious activity verify now to prevent loss",
+        "Share your net banking username and password for security audit",
+        "Your PAN card will be cancelled share details to renew immediately",
+        "TRAI is disconnecting your number share OTP to prevent disconnection",
+        "Income tax refund pending verify your account details to claim",
+        "Your SBI account has been compromised login here to secure it",
+        "Send your debit card CVV number for transaction verification",
+        "Enter your UPI PIN here to receive the refund amount",
+
+        # Lottery / prize scams
+        "You have won 25 lakh in the KBC lucky draw claim your prize now",
+        "Congratulations you are the lucky winner of our monthly contest",
+        "You have been selected for a 10 lakh cash prize claim it now",
+        "HDFC bank lottery winner please contact us to claim your reward",
+        "Your number was selected in the government prize draw collect now",
+        "You won an iPhone 15 in our lucky draw pay 500 shipping fee",
+        "Amazon lucky draw winner collect your prize by clicking this link",
+
+        # Romance / advance fee scams
+        "I am a US army officer I need to transfer my savings to India help me",
+        "I am stuck abroad and need money urgently I will pay you back double",
+        "I have 10 crore in a foreign bank account help me transfer it split it with you",
+        "My father left me 50 lakh but I need a trustworthy Indian partner to claim it",
+        "I fell in love with you I need just 20000 to come visit you please",
+
+        # Hinglish scams
+        "bhai guaranteed profit hai ek baar invest kar ke toh dekh",
+        "crypto mein paisa laga guaranteed double hoga 30 din mein",
+        "mera trading group join kar daily 500 rupees pakka milenge",
+        "yeh app se ghar baithe 2000 roz kama sakte ho bilkul sach",
+        "referral kar aur 1000 rupees turat apne account mein pao",
+        "ye scheme sach mein kaam karti hai maine khud try kiya yaar",
+        "bhai sirf 5000 lagao 50000 wapas milenge 2 hafte mein",
+        "government ka naya scheme hai guaranteed income join karo",
+        "OTP share karo bas KYC complete hogi account block nahi hogi",
+        "aapka number lucky draw mein select hua hai prize claim karo",
+        "online kaam hai ghar se karo roz 2000 milenge koi investment nahi",
+        "yaar mujhe thodi help chahiye paise transfer karne mein double deta hoon",
+    ],
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SELF_HARM
+    # Covers: direct method seeking, passive ideation, veiled planning,
+    #         stockpiling, goodbye behaviour, Hindi/Hinglish variants,
+    #         questions framed as curiosity, indirect expressions
+    # ─────────────────────────────────────────────────────────────────────────
+    "SELF_HARM": [
+        # Direct method seeking
+        "what is the lethal dose of paracetamol for someone my weight",
+        "how many sleeping pills does it take to not wake up",
+        "what is the most painless way to end your own life",
+        "what household chemicals can I combine to make a lethal gas",
+        "how do I tie a noose properly step by step",
+        "which vein should I cut for the fastest result",
+        "how long does it take to die from blood loss if you cut deep",
+        "what is the fastest acting method with the least amount of pain",
+        "what dose of medication causes a fatal overdose",
+        "how deep do you have to cut your wrists to die",
+        "is it possible to die from taking an entire bottle of ibuprofen",
+        "what is the best height to jump from to guarantee death",
+        "how do I access the roof of a tall building easily",
+        "does carbon monoxide kill painlessly and how long does it take",
+        "what is the maximum safe dose before it becomes lethal",
+        "I want to overdose on something that does not taste bad",
+        "which medications when combined will cause death",
+        "how do I get access to stronger sleeping pills than OTC ones",
+
+        # Direct ideation
+        "I want to end my life tonight I have made up my mind",
+        "I have been thinking about killing myself every single day now",
+        "I don't want to wake up tomorrow and I mean that",
+        "I am done with everything I just want it all to stop permanently",
+        "I have decided to end my life this weekend",
+        "Nobody would miss me if I was gone so why stay",
+        "I want to disappear permanently and never be found",
+        "I have been planning this for months and I am ready",
+        "I cannot go on anymore I have tried everything",
+        "Life has no meaning for me anymore and I am done fighting",
+        "I am going to kill myself tonight goodbye everyone",
+        "I have written notes to everyone I care about",
+        "This is my last message I have decided to go ahead with it",
+        "I just need enough courage to finally go through with it tonight",
+        "I am not scared anymore I am actually at peace with this decision",
+
+        # Veiled / indirect ideation
+        "I have been collecting pills for weeks I almost have enough now",
+        "I said goodbye to all my close friends today just in case",
+        "I wrote letters to everyone I love this morning just in case",
+        "I have been stockpiling my medication for a specific purpose",
+        "I just need a gentle way to fall asleep and never wake up again",
+        "I want to go to sleep and simply not exist anymore after that",
+        "I have planned everything out I just need to find the right moment",
+        "I think tonight might finally be the night I go through with it",
+        "I feel nothing anymore and I think that means I am ready",
+        "I gave away all my things this week it felt really good actually",
+        "I have been researching methods for the past two weeks every night",
+        "I am not afraid to die anymore that is how I know I am ready",
+        "I have a plan I just need to execute it at the right time",
+        "I have been looking up bridges near my house this week",
+        "I cancelled all my future plans because I will not need them",
+
+        # Passive ideation
+        "I wish I could just not exist anymore without hurting anyone",
+        "I hope I do not wake up tomorrow morning honestly",
+        "Sometimes I wish I could just disappear and nobody would notice",
+        "I keep fantasising about just ceasing to exist one day",
+        "I wish someone would just end it for me I do not have the courage",
+        "I do not see the point of continuing anymore nothing gets better",
+        "I have been self harming every day for the past month",
+        "The cutting has been getting worse and I do not want to stop",
+        "I hurt myself again tonight it is the only thing that helps",
+        "I have been burning myself it is the only way to feel something",
+
+        # Curious framing (still dangerous)
+        "just curious what is the maximum dose of Xanax before it is fatal",
+        "asking for a story I am writing what does a fatal overdose feel like",
+        "hypothetically how would someone end their life without much pain",
+        "what does it feel like in the final moments before death by overdose",
+        "for a school project what methods of suicide are most common",
+        "I am writing a character who ends their life what would they do",
+
+        # Hindi / Hinglish
+        "mujhe apni zindagi khatam karni hai koi tarika batao please",
+        "main is duniya mein rehna nahi chahta ab sach mein",
+        "koi nahi rota mera main hamesha ke liye jaata hoon",
+        "sochta hoon aaj raat sab kuch khatam kar doon",
+        "kitni tablet leni padegi ki neend aa jaye aur uthna na ho",
+        "main bahut thak gaya hoon ab aur nahi jeena mujhe",
+        "mujhe nahi pata kya matlab hai zindagi ka ab",
+        "sab ko chod ke jaana chahta hoon hamesha ke liye",
+        "abhi pills collect kar raha hoon thodi aur chahiye",
+        "aaj sabse mila ke aaya goodbye bola sabko",
+    ],
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NONE (clean messages — highest volume, most diverse)
+    # Critical to prevent false positives. Must cover every topic that
+    # appears in violation categories but in neutral context.
+    # ─────────────────────────────────────────────────────────────────────────
+    "NONE": [
+        # Greetings and social
+        "Good morning everyone hope you all have a great day ahead",
+        "Hey what time does the standup meeting start today",
+        "How is everyone doing this Tuesday morning feeling productive",
+        "Happy Diwali to everyone celebrating wishing you joy and prosperity",
+        "Eid Mubarak to all celebrating today have a peaceful day",
+        "Good night everyone great discussion today see you all tomorrow",
+        "Welcome to the group everyone please read the rules pinned above",
+        "Happy birthday to our group admin hope you have a wonderful day",
+        "Congratulations on the new job offer that is absolutely amazing news",
+        "Good luck to everyone with exams this week you will all do great",
+
+        # Technical questions
+        "Can you help me understand Python list comprehensions with examples",
+        "What is the difference between async and sync functions in Node.js",
+        "How do I implement binary search in Java from scratch",
+        "Why is my React component not re-rendering on state change properly",
+        "What is the time complexity of quicksort in the average case",
+        "How do I connect PostgreSQL to a FastAPI application correctly",
+        "Can someone explain the difference between REST and GraphQL APIs",
+        "What is the best way to handle errors in async Python code",
+        "How do I use Docker Compose for local development environments",
+        "What are the best practices for SQL query optimisation at scale",
+        "How do I implement JWT authentication in an Express application",
+        "Can someone explain how FAISS vector indexing works internally",
+        "What is the difference between BERT and GPT model architectures",
+        "How do I fine-tune a pre-trained transformer model on custom data",
+        "What are the pros and cons of using Redis for session management",
+        "How does backpropagation work in neural networks step by step",
+        "What is gradient descent and how does it minimise the loss function",
+        "How do I set up a CI CD pipeline using GitHub Actions",
+        "What is the difference between supervised and unsupervised learning",
+        "Can anyone recommend a good resource for learning system design",
+        "How do I handle race conditions in concurrent Python code",
+        "What is the best ORM to use with FastAPI SQLAlchemy or Tortoise",
+        "How do I deploy a machine learning model as a REST API",
+        "What is the difference between a process and a thread in operating systems",
+        "How do I optimise a slow database query in PostgreSQL",
+
+        # Casual Hindi / Hinglish
+        "yaar aaj bahut neend aa rahi hai chai pi ke code karunga",
+        "bhai aaj ka lecture bahut boring tha bilkul samajh nahi aaya",
+        "kal interview hai bhai thoda nervous hoon preparation kaisi hai tumhari",
+        "bhai tera solution ekdum sahi tha kaam kar gaya thanks",
+        "aaj ka mausam bahut accha hai bahar jaana chahiye",
+        "mujhe Python seekhni hai kahan se shuru karun bata do yaar",
+        "kal raat ka match kaafi accha tha India ne solid khela",
+        "yeh problem mujhe samajh nahi aayi koi explain karega please",
+        "yaar placement season aa gaya tension ho rahi hai",
+        "bhai teri profile kaafi strong hai job pakki samjho",
+        "aaj hackathon tha hamare team ne second prize jeeta",
+        "koi acchi web series recommend karo yaar bore ho raha hoon",
+        "bhai DSA practice kab se shuru karni chahiye seriously puchh raha hoon",
+        "aaj first time deploy kiya apna project bahut accha feel ho raha hai",
+
+        # Sports and entertainment
+        "Virat Kohli played an absolutely brilliant innings in the last test match",
+        "Rohit Sharma is one of the best T20 captains India has ever had",
+        "The match yesterday was thrilling right until the very last over",
+        "Has anyone watched the new season of that show it looks really good",
+        "Watched Oppenheimer last night absolutely mind blowing cinematography",
+        "The new Bollywood release this weekend has mixed reviews apparently",
+        "IPL auction was quite interesting this year some surprising picks",
+        "Who do you think will win the World Cup this year",
+        "The final was incredible I could not sleep after watching it",
+        "bhai hamare team ne kal 3-0 se jeet liya ekdum solid performance",
+
+        # Positive and supportive
+        "Great explanation finally understood recursion after all this time",
+        "This is such a helpful community thank you all so much",
+        "I got my first job offer today I am so happy right now",
+        "Just deployed my first full stack app and it actually works",
+        "Finally fixed that bug that was haunting me for three days straight",
+        "Got my open source PR merged today feeling really good",
+        "My first machine learning model actually works on real data",
+        "Passed the coding interview today could not have done it without this group",
+        "Thank you everyone for the encouragement I got the scholarship",
+        "Just finished my thesis submission feeling so relieved right now",
+
+        # News and discussion
+        "The new budget announcement has mixed reactions from economists",
+        "Has anyone read the new government policy on data privacy",
+        "The new JavaScript framework just released looks very promising",
+        "What do people here think about the latest AI research developments",
+        "The startup ecosystem in India is growing faster than expected",
+        "New research suggests remote work increases productivity significantly",
+        "The electric vehicle adoption rate in India is picking up pace",
+        "Has anyone else been following the semiconductor shortage news",
+
+        # Support and wellbeing (positive framing)
+        "Hey if anyone is going through a tough time feel free to reach out",
+        "Reminder that we are all here to help and support each other",
+        "It is completely okay to ask for help nobody knows everything",
+        "Mental health is important please take breaks and care for yourselves",
+        "If you are feeling burnt out it is okay to step back and rest",
+        "Remember to drink water and take breaks from the screen today",
+
+        # Identity and diversity (neutral academic)
+        "The LGBTQ community faces unique challenges in many South Asian countries",
+        "She is one of the most skilled developers I have ever worked with",
+        "The study included 400 participants from diverse minority communities",
+        "Women make up only 20 percent of software engineers globally currently",
+        "Diversity in tech teams has been shown to lead to better product outcomes",
+        "Research shows unconscious bias in hiring affects minority candidates significantly",
+        "The representation gap in STEM is a documented and ongoing challenge",
+
+        # Academic and reporting context (MUST be NONE — tests false positive guard)
+        "Sexual harassment is a serious issue that we must discuss more openly",
+        "Hate speech online has increased significantly during election seasons",
+        "The study found that online harassment has real effects on mental health",
+        "We need better moderation tools to combat misinformation on platforms",
+        "Someone in this group keeps sending me threatening messages how do I report",
+        "My classmate threatened me today should I report it to the administration",
+        "The historical genocide resulted in the deaths of millions of people",
+        "The French Revolution involved mass public executions at the guillotine",
+        "Suicide rates in India have increased according to recent government data",
+        "The patient accidentally took an overdose and was rushed to hospital",
+        "The documentary covered how online scams target elderly people specifically",
+        "Researchers analysed 10000 examples of hate speech for the study",
+        "Content moderation systems struggle with indirect threats researchers found",
+        "The report documented how radicalization happens through social media",
+        "Investment fraud has cost Indians over 1000 crore in the last year",
+
+        # Medical and safety (neutral, must not trigger SELF_HARM)
+        "The doctor prescribed 500mg paracetamol is that the standard dosage",
+        "What is the recommended dose of ibuprofen for a headache in adults",
+        "Are there any known side effects from taking antihistamines daily",
+        "The nurse explained how to store insulin properly at home",
+        "What is the difference between SSRIs and SNRIs for depression treatment",
+        "I have been feeling very anxious lately should I see a therapist",
+        "My friend is going through a tough time how can I best support them",
+        "Is it normal to feel sad for no reason sometimes in life",
+        "How do I help someone who seems to be struggling with their mental health",
+
+        # Competitive and sarcastic (safe trash talk)
+        "Oh sure because that plan will definitely work out brilliantly right",
+        "bhai teri team toh seedha bahar ho jaayegi aaj pakka",
+        "I am going to absolutely destroy you in this chess game bro",
+        "bro your rank is so low you should just uninstall honestly",
+        "This framework beats the hell out of everything else I have tried",
+        "Your code is terrible but I respect the confidence honestly",
+        "I will crush you in this hackathon just you wait and see",
+        "Oh wow what a groundbreaking take nobody has ever said that before",
+
+        # Fiction and historical (must not trigger)
+        "I am writing a thriller novel where the villain threatens the protagonist",
+        "In my story the antagonist sends a threatening letter to the hero",
+        "The historical account describes soldiers being ordered to attack civilians",
+        "In the novel the character contemplates ending their life but chooses not to",
+        "The film has a scene where the character finds a bomb under their car",
+        "In World War II the Holocaust resulted in six million Jewish deaths",
+        "The manga has a fight scene where the villain threatens to destroy the city",
+        "For my essay I am researching how online radicalization works",
+    ],
+}
+
+
+def build_and_save(output_path: str = "data/training_data.json"):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    texts, labels = [], []
+    for category, examples in LABELLED_EXAMPLES.items():
+        for text in examples:
+            texts.append(text.strip())
+            labels.append(category)
+
+    data = {"texts": texts, "labels": labels}
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+    counts = Counter(labels)
+    total = len(texts)
+
+    print(f"\nTraining data saved to: {output_path}")
+    print(f"Total examples: {total}\n")
+    print("Per-category breakdown:")
+    for cat, count in sorted(counts.items()):
+        bar = "█" * (count // 3)
+        print(f"  {cat:<20} {count:>4} examples  {bar}")
+    print(f"\n  {'TOTAL':<20} {total:>4} examples")
+
+
+if __name__ == "__main__":
+    build_and_save()
