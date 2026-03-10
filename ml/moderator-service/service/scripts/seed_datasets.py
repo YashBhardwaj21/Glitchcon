@@ -299,8 +299,8 @@ async def seed_faiss_topics(db: AsyncSession):
         "MDMA LSD ganja charas online order illegal drugs",
     ]
 
-    # Must use the same model as inference (paraphrase-multilingual-MiniLM-L12-v2)
-    # Downloads ~118 MB on first run, cached in ~/.cache/huggingface
+    # Must use the same model as inference (paraphrase-multilingual-mpnet-base-v2)
+    # Downloads ~420 MB on first run, cached in ~/.cache/huggingface
     model = SentenceTransformer(settings.EMBEDDING_MODEL)
 
     for topic in banned_topics:

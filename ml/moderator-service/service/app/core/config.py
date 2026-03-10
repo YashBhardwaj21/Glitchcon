@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     DEFAULT_RATE_LIMIT_PER_MIN: int = 60
 
-    EMBEDDING_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    EMBEDDING_MODEL: str = "paraphrase-multilingual-mpnet-base-v2"
     FAISS_INDEX_DIR: str = "./data/faiss_indices"
 
     CELERY_BROKER_URL: str

@@ -27,7 +27,7 @@ bcrypt                    # passlib[bcrypt] pulls this, but pin it explicitly
 groq                      # Groq async client (Llama-3)
 
 # ── AI / ML pipeline ──────────────────────────────────────
-sentence-transformers     # paraphrase-multilingual-MiniLM-L12-v2
+sentence-transformers     # paraphrase-multilingual-mpnet-base-v2
 faiss-cpu                 # FAISS vector index (CPU); swap to faiss-gpu if CUDA available
 scikit-learn              # LogisticRegression classifier (Stage 2A)
 numpy                     # required by faiss-cpu and sentence-transformers

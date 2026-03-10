@@ -37,7 +37,7 @@ class BannedTopicEmbedding(Base):
     id = Column(Integer, primary_key=True, index=True)
     profile_id = Column(String, ForeignKey("rules_profiles.profile_id"), index=True, nullable=False)
     topic_label = Column(String, nullable=False)
-    embedding = Column(ARRAY(Float), nullable=False)  # 384-dim
+    embedding = Column(ARRAY(Float), nullable=False)  # 768-dim
     
     created_at = Column(DateTime(timezone=True), default=get_utc_now)
 

@@ -1,5 +1,4 @@
 import time
-import asyncio
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +16,7 @@ _llm_provider = None
 
 # ── Academic / Reporting Context Guard ───────────────────────────────────────
 # Detects messages that DISCUSS a topic vs PERPETUATE it.
-# Prevents FAISS false positives on neutral/academic messages.
+# Prevents FAISS + LLM false positives on neutral/analytical messages.
 _REPORTING_CONTEXT_PHRASES = [
     "is a serious issue", "we must discuss", "we should discuss",
     "research shows", "study found", "statistics show",
@@ -26,6 +25,20 @@ _REPORTING_CONTEXT_PHRASES = [
     "reporting this", "i want to report",
     "what is", "why does", "how does",
     "can someone explain",
+    # Threat-reporting context (victim describing threat they received)
+    "i received a threat", "someone threatened me", "i was threatened",
+    "got a threat", "being threatened", "threatening messages",
+    # Scam-awareness context
+    "explaining a scam", "warning about", "be careful of",
+    "this is a scam", "watch out for", "don't fall for",
+    # News / journalism context
+    "news report", "according to reports", "breaking news",
+    "in the news", "reported that", "journalists say",
+    "according to police", "according to authorities",
+    # Gaming / competitive banter context
+    "in the game", "in this match", "competitive gaming",
+    "trash talk", "friendly banter", "just joking",
+    "just kidding", "lol i will", "haha i will",
 ]
 
 def _is_reporting_context(text: str) -> bool:
@@ -65,11 +78,10 @@ class ModerationEngine:
                 context={"violation": prefilter_result.matched},
                 db=db, redis=redis
             )
-            # Fallback map — stage1_prefilter sets category explicitly,
-            # this is a safety net only
             _category_fallback = {
                 "pii": "PII", "spam": "SPAM", "profanity": "PROFANITY",
-                "hate_speech": "HATE_SPEECH", "threat": "THREAT", "keyword": "HATE_SPEECH",
+                "hate_speech": "HATE_SPEECH", "threat": "THREAT",
+                "keyword": "HATE_SPEECH",
             }
             stage1_category = (
                 prefilter_result.category
@@ -93,30 +105,40 @@ class ModerationEngine:
                 metadata=request.metadata
             )
 
+        # ── Compute embedding once — shared by Stage 2A and Stage 3 ──────────
+        # FaissService.encode() normalises the vector (required for cosine sim).
+        # Passing it downstream avoids a second encode() call (~10ms saving).
+        embedding = FaissService.encode(lang_ctx.normalised_text)
+
         # ── Stage 2A: Local Classifier ────────────────────────────────────────
-        # Fast local model (~2ms). Handles ~70% of semantic violations.
-        # LLM only called for messages where classifier is uncertain (0.50–0.80 conf).
+        # Receives pre-computed 768-dim embedding — NOT raw text.
+        # Returns: decision (BLOCK/HINT/ALLOW), category, confidence, hint.
+        # BLOCK  (conf >= 0.80, category != NONE) → skip FAISS + LLM entirely
+        # HINT   (conf 0.40–0.80)                 → pass to LLM with hint
+        # ALLOW  (conf < 0.40)                    → continue to FAISS
         s2a_start = time.perf_counter()
-        classifier_result = Stage2Classifier.predict(request.message)
+        classifier_result = Stage2Classifier.predict(embedding)
         latency_stage2a = int((time.perf_counter() - s2a_start) * 1000)
 
-        if classifier_result.decision == "BLOCK":
-            # Classifier is confident — block immediately, skip FAISS and LLM
+        if classifier_result and classifier_result["decision"] == "BLOCK":
             total_latency = int((time.perf_counter() - total_start) * 1000)
             feedback = await FeedbackTemplateService.render(
-                rule_type=classifier_result.category.lower(),
+                rule_type=classifier_result["category"].lower(),
                 lang_code=lang_ctx.code,
                 context={},
                 db=db, redis=redis
             )
             return ModerationResponse(
                 decision="BLOCK",
-                category=classifier_result.category,
+                category=classifier_result["category"],
                 detected_language=lang_ctx.code,
                 stage_triggered="stage2_classifier",
-                confidence=classifier_result.confidence,
-                violated_rule=classifier_result.category.lower(),
-                reason=f"Blocked by local classifier: {classifier_result.category}",
+                confidence=classifier_result["confidence"],
+                violated_rule=classifier_result["category"].lower(),
+                reason=(
+                    f"Blocked by local classifier: {classifier_result['category']} "
+                    f"(conf: {classifier_result['confidence']:.2f})"
+                ),
                 feedback_message=feedback,
                 latency_ms=LatencyResult(
                     stage0_lang=latency_stage0,
@@ -129,39 +151,39 @@ class ModerationEngine:
             )
 
         # ── Stage 3: FAISS Semantic Search ────────────────────────────────────
+        # Passes pre-computed embedding to avoid a second encode() call.
         s3_start = time.perf_counter()
         faiss_result = await FaissService.search(
             lang_ctx.normalised_text,
             profile.profile_id,
             profile.faiss_threshold,
-            db
+            db,
+            precomputed_embedding=embedding
         )
         latency_stage3 = int((time.perf_counter() - s3_start) * 1000)
 
-        # Academic/reporting context guard — downgrade FAISS hard block to hint
-        # to prevent false positives on neutral analytical messages
+        # Reporting context guard — downgrade FAISS hard block to hint
         faiss_decision = faiss_result.decision
-        faiss_score = faiss_result.score
+        faiss_score    = faiss_result.score
         if faiss_decision == "BLOCK" and _is_reporting_context(request.message):
             faiss_decision = "HINT"
-            faiss_score = faiss_score * 0.85
+            faiss_score    = faiss_score * 0.85
 
-        # Build FAISS hint for LLM if in soft threshold range
         faiss_hint = None
         if faiss_decision == "HINT":
             faiss_hint = (faiss_result.topic, faiss_score)
 
-        # ── Stage 2B: LLM — only for ambiguous cases ──────────────────────────
-        # Reaches here only if:
-        #   - Classifier was uncertain (HINT or low-confidence ALLOW)
-        #   - FAISS didn't hard block
-        # This means LLM sees ~10-20% of total traffic, not 100%
+        # ── Stage 2B: LLM ─────────────────────────────────────────────────────
+        # Only reached when classifier or FAISS is uncertain.
+        # Target: ~10-20% of traffic.
         s2_start = time.perf_counter()
         llm_response = None
 
-        # Determine if LLM is needed
-        classifier_uncertain = classifier_result.decision == "HINT"
-        faiss_hinting = faiss_decision == "HINT"
+        classifier_uncertain = (
+            classifier_result is not None
+            and classifier_result["decision"] == "HINT"
+        )
+        faiss_hinting   = faiss_decision == "HINT"
         keyword_hinting = bool(prefilter_result.keyword_hint)
 
         needs_llm = (
@@ -170,13 +192,16 @@ class ModerationEngine:
         )
 
         if needs_llm:
-            # Build combined hint from classifier + keyword
             combined_hint = prefilter_result.keyword_hint
-            if classifier_result.hint and "classifier_unavailable" not in classifier_result.hint:
+            if (
+                classifier_result
+                and classifier_result.get("hint")
+                and "classifier_unavailable" not in classifier_result["hint"]
+            ):
                 combined_hint = (
-                    f"{classifier_result.hint}. {combined_hint}"
+                    f"{classifier_result['hint']}. {combined_hint}"
                     if combined_hint
-                    else classifier_result.hint
+                    else classifier_result["hint"]
                 )
 
             llm_response = await Stage2LLM.process(
@@ -191,34 +216,35 @@ class ModerationEngine:
             )
 
         latency_stage2 = int((time.perf_counter() - s2_start) * 1000)
-        total_latency = int((time.perf_counter() - total_start) * 1000)
+        total_latency  = int((time.perf_counter() - total_start) * 1000)
 
         # ── Final Decision ────────────────────────────────────────────────────
         stage_triggered = None
-        decision = "ALLOW"
-        category = "NONE"
-        confidence = None
-        violated_rule = None
-        reason = None
-        feedback = None
+        decision        = "ALLOW"
+        category        = "NONE"
+        confidence      = None
+        violated_rule   = None
+        reason          = None
+        feedback        = None
 
         if faiss_decision == "BLOCK":
-            decision = "BLOCK"
+            decision        = "BLOCK"
             stage_triggered = "stage3_faiss"
-            confidence = faiss_score
-            violated_rule = "topic"
-            category = getattr(faiss_result, "category", "NONE") or "NONE"
-            reason = f"Blocked by FAISS semantic override: {faiss_result.topic}"
-            feedback = await FeedbackTemplateService.render(
+            confidence      = faiss_score
+            violated_rule   = "topic"
+            category        = getattr(faiss_result, "category", "NONE") or "NONE"
+            reason          = f"Blocked by FAISS: {faiss_result.topic}"
+            feedback        = await FeedbackTemplateService.render(
                 "topic", lang_ctx.code, {"topic": faiss_result.topic}, db, redis
             )
+
         elif llm_response:
-            decision = llm_response.decision
-            category = getattr(llm_response, "category", "NONE") or "NONE"
-            confidence = llm_response.confidence
+            decision      = llm_response.decision
+            category      = getattr(llm_response, "category", "NONE") or "NONE"
+            confidence    = llm_response.confidence
             violated_rule = llm_response.violated_rule
-            reason = llm_response.reason
-            feedback = llm_response.feedback_message
+            reason        = llm_response.reason
+            feedback      = llm_response.feedback_message
             if decision == "BLOCK":
                 stage_triggered = "llm"
                 if faiss_decision == "HINT":
@@ -227,6 +253,39 @@ class ModerationEngine:
                     stage_triggered += "+classifier_hint"
                 if prefilter_result.keyword_hint:
                     stage_triggered += "+keyword_hint"
+
+        # ── Classifier-only HINT fallback ─────────────────────────────────────
+        # Handles the case where the classifier returned HINT with a real
+        # violation category but needs_llm was False because there was no
+        # FAISS hint and no keyword hint. Without this block those messages
+        # silently become ALLOW — fixing Group 3 failures from the test suite.
+        if (
+            decision == "ALLOW"
+            and classifier_result is not None
+            and classifier_result["decision"] == "HINT"
+            and classifier_result["category"] != "NONE"
+            and not needs_llm
+        ):
+            combined_hint = classifier_result.get("hint")
+            fallback_llm = await Stage2LLM.process(
+                request.message,
+                profile,
+                lang_ctx,
+                _llm_provider,
+                db,
+                redis,
+                faiss_hint=None,
+                keyword_hint=combined_hint
+            )
+            if fallback_llm:
+                decision      = fallback_llm.decision
+                category      = getattr(fallback_llm, "category", "NONE") or "NONE"
+                confidence    = fallback_llm.confidence
+                violated_rule = fallback_llm.violated_rule
+                reason        = fallback_llm.reason
+                feedback      = fallback_llm.feedback_message
+                if decision == "BLOCK":
+                    stage_triggered = "llm+classifier_hint"
 
         return ModerationResponse(
             decision=decision,
@@ -243,7 +302,10 @@ class ModerationEngine:
                 stage2_llm=latency_stage2,
                 stage3_faiss=latency_stage3,
                 total=total_latency,
-                llm_provider=getattr(_llm_provider, "name", "unknown") if llm_response else None
+                llm_provider=(
+                    getattr(_llm_provider, "name", "unknown")
+                    if llm_response else None
+                )
             ),
             metadata=request.metadata
         )
