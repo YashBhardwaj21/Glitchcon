@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-heading:
+    "Poppins", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "Cascadia Code", "Fira Code", monospace;
+
+  /* ── Core palette ── */
+  --color-dark: #202022;
+  --color-card: #f9fafc;
+  --color-primary: #7678ed;
+  --color-primary-light: #9395f5;
+  --color-primary-dark: #5c5ed4;
+  --color-badge: #ff7a55;
+
+  /* ── Surfaces ── */
+  --color-hover: rgba(118, 120, 237, 0.08);
+  --color-active-chat: #e8eaff;
+  --color-chat-list-bg: #f5f6f8;
+  --color-chat-item-hover: #efeff3;
+  --color-bubble-received: #f0f1f4;
+  --color-bubble-sent: #7678ed;
+
+  /* ── Borders ── */
+  --color-border: #ecedf0;
+  --color-border-chat: #e6e8ec;
+  --color-border-dark: rgba(255, 255, 255, 0.08);
+
+  /* ── Text ── */
+  --color-text-primary: #1a1a2e;
+  --color-text-secondary: #6b6e7b;
+  --color-text-muted: #9ca0ae;
+  --color-text-inverse: #ffffff;
+  --color-text-light: #e8e8f0;
+
+  /* ── Semantic ── */
+  --color-online: #34d399;
+  --color-danger: #ef4444;
+  --color-warning-bg: rgba(239, 68, 68, 0.06);
+  --color-warning-border: rgba(239, 68, 68, 0.25);
+  --color-code-bg: #1e1e2e;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  background: #202022;
+}
