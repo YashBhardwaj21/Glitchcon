@@ -1,12 +1,3 @@
-# test_categorization_v3.ps1
-# Harder test suite — complex phrasing, multilingual mixing, adversarial inputs,
-# category boundary cases, and tricky ALLOW edge cases.
-#
-# Usage:
-#   .\test_categorization_v3.ps1
-#   .\test_categorization_v3.ps1 -Verbose
-#   .\test_categorization_v3.ps1 -Level 3
-
 param(
     [switch]$Verbose,
     [int]$Level = 5
