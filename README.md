@@ -2,7 +2,7 @@
 
 <br/>
 
-# 🛡️ SentinelAI
+# 🛡️ CommonsAI
 ### *AI-Powered Real-Time Contextual Chat Moderator*
 
 > **"Guarding conversations. Empowering learning."**
