@@ -111,16 +111,16 @@ Unmoderated or loosely moderated learning communities suffer from violations acr
 
 | # | Rule | What SentinelAI Enforces |
 |---|------|--------------------------|
-| 1 | 🤝 **Respectful Communication** | Blocks abusive, vulgar, hateful, or offensive language and enforces a professional, respectful tone at all times |
-| 2 | 🔒 **No Personal or Sensitive Information** | Detects and blocks phone numbers, email addresses, home addresses, government IDs (Aadhaar, PAN), bank details, passwords, OTPs, and API keys before they are exposed |
-| 3 | 🏛️ **No Political or Religious Discussions** | Intercepts political opinions, election-related topics, and religious debates that fall outside the scope of a learning community |
-| 4 | 📢 **No Promotions or Advertising** | Catches self-promotion, product marketing, referral links, affiliate links, brand promotions, and negative marketing about competing platforms |
-| 5 | 📚 **Stay On Topic** | Ensures all discussions remain relevant to the group's learning subject — filters out unrelated technologies, social media, cinema, and entertainment |
-| 6 | 💸 **No Financial or Gambling Content** | Blocks investment advice, trading tips, crypto discussions, betting, and gambling-related content |
-| 7 | ⚠️ **No Illegal or Unsafe Content** | Prevents discussions about pirated software, hacking tools, exam malpractice, illegal activities, and unsafe practices |
-| 8 | 🚫 **No Spam or Low-Quality Messages** | Eliminates repeated messages, excessive emojis, copy-paste floods, and content with no meaningful learning value |
-| 9 | 🤖 **AI Moderation Feedback** | When a message is blocked, the AI moderator returns a polite, contextual explanation and suggests how the user can rephrase or redirect their message constructively |
-| 10 | 🛡️ **Moderation Philosophy & Admin Control** | Moderation is preventive and educational, not punitive. Admins can dynamically update rules, keywords, and topic boundaries through the admin panel without any code changes |
+| 1 |  **Respectful Communication** | Blocks abusive, vulgar, hateful, or offensive language and enforces a professional, respectful tone at all times |
+| 2 | **No Personal or Sensitive Information** | Detects and blocks phone numbers, email addresses, home addresses, government IDs (Aadhaar, PAN), bank details, passwords, OTPs, and API keys before they are exposed |
+| 3 |  **No Political or Religious Discussions** | Intercepts political opinions, election-related topics, and religious debates that fall outside the scope of a learning community |
+| 4 |  **No Promotions or Advertising** | Catches self-promotion, product marketing, referral links, affiliate links, brand promotions, and negative marketing about competing platforms |
+| 5 | **Stay On Topic** | Ensures all discussions remain relevant to the group's learning subject — filters out unrelated technologies, social media, cinema, and entertainment |
+| 6 | **No Financial or Gambling Content** | Blocks investment advice, trading tips, crypto discussions, betting, and gambling-related content |
+| 7 | **No Illegal or Unsafe Content** | Prevents discussions about pirated software, hacking tools, exam malpractice, illegal activities, and unsafe practices |
+| 8 |  **No Spam or Low-Quality Messages** | Eliminates repeated messages, excessive emojis, copy-paste floods, and content with no meaningful learning value |
+| 9 | **AI Moderation Feedback** | When a message is blocked, the AI moderator returns a polite, contextual explanation and suggests how the user can rephrase or redirect their message constructively |
+| 10 | **Moderation Philosophy & Admin Control** | Moderation is preventive and educational, not punitive. Admins can dynamically update rules, keywords, and topic boundaries through the admin panel without any code changes |
 
 > **Post-facto moderation is too late.** By the time a harmful message is reviewed, the damage is already done. SentinelAI stops violations at the source — before they ever reach the community.
 
